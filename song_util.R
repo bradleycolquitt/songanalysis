@@ -25,15 +25,12 @@ filtersong = function(wav) {
 #' @param wav, the input Wave object
 #' @param window, the smoothing window in milliseconds
 #' @return Wave object containing smoothed data in left slot 
-# FIX
-smoothsong = function(wav, window=2) {
-  # window is in units of ms
+smoothsong = function(wav, window=0.2) {
   window_length = round(wav@samp.rate * window / 1000)
   data = wav@left
   filt = rep(1, times=window_length) / window_length
-  data1 = conv(data, filt)
-  offset = round((length(data1) - length(data))/2)
-  return(Wave(data1[(1+offset):(length(data)+offset)], samp.rate=wav@samp.rate, bit=wav@bit))
+  data1 = convolve(data, filt, type="filter")
+  return(Wave(data1, samp.rate=wav@samp.rate, bit=wav@bit))
 }
 
 #' Find amplitude peaks in wav file
@@ -112,14 +109,12 @@ songfinder = function(wav, band=c(5,7),
   return(median_peaks_dist < dist_thresh)
 }
 
-
 songfinder_psd = function(psd, 
                           band=c(5,8), 
                           wein_thresh=0.45) {
   wein = weiner_entropy_psd(psd, region=band)
   return(wein<wein_thresh)
 }
-
 
 compute_class = function(res, trues) {
   tp = vector("numeric", 4)
