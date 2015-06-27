@@ -15,13 +15,15 @@ plot_2dspec = function(wav) {
   xmin=slider(0, length(wav) / wav@samp.rate, initial=0))
 }
 
+#' High pass filter Wave object at 1800 Hz
+#' @param wav, the input Wave object
 filtersong = function(wav) {
   return(ffilter(wav, from=1800, output="Wave"))
 }
 
 #' Moving average smooth Wave object
-#' @param wav the input Wave object
-#' @param window the smoothing window in milliseconds
+#' @param wav, the input Wave object
+#' @param window, the smoothing window in milliseconds
 #' @return Wave object containing smoothed data in left slot 
 # FIX
 smoothsong = function(wav, window=2) {
@@ -34,7 +36,12 @@ smoothsong = function(wav, window=2) {
   return(Wave(data1[(1+offset):(length(data)+offset)], samp.rate=wav@samp.rate, bit=wav@bit))
 }
 
-findpeaks = function(wav, max_gap=75, thresh=0.5) {
+#' Find amplitude peaks in wav file
+#' @param wav, the input Wave object
+#' @param max_gap, maximum distance (in ms) between peaks before merging
+#' @param thresh, threshold for peak definition, defined as fraction of max amplitude
+#' @return data.frame containing peak starts (col1) and stops (col2) defined in seconds
+findpeaks = function(wav, max_gap=75, thresh=0.1) {
   samp_rate = wav@samp.rate
   #min_width = min_width * samp_rate / 1000 
   max_gap = max_gap * samp_rate / 1000
@@ -50,6 +57,9 @@ findpeaks = function(wav, max_gap=75, thresh=0.5) {
   return (df / samp_rate)
 }
 
+#' Find temporal distance between peaks
+#' @param peaks, data frame as outputted by findeaks, col1 is peak starts, col2 is peak stops
+#' @return vector of interpeak distances
 peak_dist = function(peaks) {
   dists = vector("numeric", nrow(peaks)-1)
   for (i in 1:(nrow(peaks)-1)) {
@@ -58,7 +68,11 @@ peak_dist = function(peaks) {
   return(dists)
 }
 
-
+#' Calculate Weiner entropy of given frequency band in Wave object
+#' @param wav, Wave object
+#' @param band, selected frequency band
+#' @references https://en.wikipedia.org/wiki/Spectral_flatness
+#' @return scalar, calculated Weiner entropy
 weiner_entropy = function(wav, band=c(6,8)) {
   psd = spec(wav, wl=256, plot=F, PSD=T)
   psd1 = psd[psd[,1]>band[1] & psd[,1]<band[2],]
@@ -66,14 +80,25 @@ weiner_entropy = function(wav, band=c(6,8)) {
   return(res)
 }
 
-
+#' Calculate Weiner entropy of given frequency band in PSD
+#' @param psd, PSD as output from spec(PSD=T)
+#' @param band, selected frequency band
+#' @references https://en.wikipedia.org/wiki/Spectral_flatness
+#' @return scalar, calculated Weiner entropy
 weiner_entropy_psd = function(psd, region=c(6,8)) {
   psd1 = psd[psd[,1]>region[1] & psd[,1]<region[2],]
   res = exp(mean(log(psd1[,2]))) / mean(psd1[,2])
   return(res)
 }
 
-
+#' Classify Wave object as song or not song
+#'     First filters for small Weiner entropy values within given band
+#'     Next filters for small interpeak distances
+#' @param wav, Wave object
+#' @param band, selected frequency band
+#' @param wein_thresh, maximum allowed Weiner entropy in frequency band
+#' @param dist_thresh, maximum interpeak distance allowed
+#' @return logical, song or not song
 songfinder = function(wav, band=c(5,7), 
                       wein_thresh=0.4, 
                       dist_thresh = 0.06) {
@@ -88,14 +113,11 @@ songfinder = function(wav, band=c(5,7),
 }
 
 
-songfinder_psd = function(psd, band=c(5,8), 
-                      sum_thresh=0.4, var_thresh=.002,
-                      wein_thresh=0.45) {
-  #psd_sum = sum(psd[psd[,1]>band[1] & psd[,1]<band[2],2]) / sum(psd[,2])
-  #psd_var = var(psd[psd[,1]>band[1] & psd[,1]<band[2],2]) 
+songfinder_psd = function(psd, 
+                          band=c(5,8), 
+                          wein_thresh=0.45) {
   wein = weiner_entropy_psd(psd, region=band)
   return(wein<wein_thresh)
-  #return(psd_sum>sum_thresh & psd_var>var_thresh & wein<wein_thresh)
 }
 
 
