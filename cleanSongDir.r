@@ -19,7 +19,7 @@ if(length(opt$thresh) == 0)
 if(length(opt$cores) == 0)
   opt$cores = 4
 
-files = list.files(opt$dir, pattern=".wav", full.names = T)
+files = list.files(opt$dir, pattern=".wav", full.names = T, )
 
 #### Filter by size ####
 sized_thresh = 400000
@@ -27,7 +27,7 @@ sized_dir = paste(opt$dir, "sized", sep="/")
 print(paste("Moving files greater than ", sized_thresh / 1000, " Mbytes to sized", sep=""))
 sizes = sapply(files, function(x) file.info(x)$size)
 dir.create(sized_dir, showWarnings = F)
-sapply(files[sizes>sized_thresh], function(x) file.copy(x, paste(sized_dir, basename(x), sep="/"), overwrite = T))
+file.copy(files[sizes>sized_thresh], sized_dir, copy.date=T)
 
 #### Filter by spectral info ####
 print("Loading WAVs...")
@@ -42,6 +42,4 @@ res = data.frame(name=sized_files, song=res)
 
 songs_dir = paste(opt$dir, "songs", sep="/")
 dir.create(songs_dir, showWarnings = F)
-for (ind in which(res[,2])) {
-  file.rename(as.character(res[ind,1]), paste(songs_dir, basename(as.character(res[ind,1])), sep="/"))
-}
+file.copy(as.character(res[,1]), songs_dir, copy.date=T)
