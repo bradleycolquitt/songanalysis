@@ -1,6 +1,7 @@
 #! /usr/bin/env python
 
 import sys
+import argparse
 import MySQLdb as mdb
 
 
@@ -60,7 +61,10 @@ create_gap_table_sql = '''CREATE TABLE IF NOT EXISTS gaps\
                         '''
 
 def main(argv):
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument(dest='db', help='Database name')
+    parser.add_argument('-d', dest='drop', action='store_true', help='Drop tables if they exist')
+    args = parser.parse_args()
 
     ## Create db
     conn = None
@@ -68,14 +72,17 @@ def main(argv):
     try:
         conn = mdb.connect('localhost', 'brad', 'Eu23ler1')
         cur = conn.cursor()
-        cur.execute("CREATE DATABASE IF NOT EXISTS {0}".format(argv[1]))
-        cur.execute("USE {0}".format(argv[1]))
+        cur.execute("CREATE DATABASE IF NOT EXISTS {0}".format(args.db))
+        cur.execute("USE {0}".format(args.db))
     except mdb.Error, e:
         print "MySQLdb error %d: %s " % (e.args[0], e.args[1])
         sys.exit()
 
     ## Create tables
     try:
+        if args.drop:
+            for x in ['gaps', 'syllables', 'motifs', 'songs', 'birds']:
+                cur.execute("""DROP TABLES {0}""".format(x))
         cur.execute(create_bird_table_sql)
         cur.execute(create_song_table_sql)
         cur.execute(create_motif_table_sql)
