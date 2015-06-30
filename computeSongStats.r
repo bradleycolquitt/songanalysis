@@ -1,22 +1,27 @@
 #! /usr/bin/env r
 
-#
-# 
-#
-#
-#
+###################################################################
+# Compute basics song statistics from directory of wav files      #   
+# Stats will be inserted into specified MySQL database            #
+###################################################################
 
-suppressMessages(source("/media/data2/rstudio/birds/song/song_util.R"))
+
+suppressMessages(source("~/src/songanalysis/song_util.R"))
 suppressMessages(library(parallel))
 suppressMessages(library(docopt))  
 suppressMessages(library(rPython))
 suppressMessages(library(stringr))
+suppressMessages(library(dplyr))
+suppressMessages(library(DBI))
 
-doc <- "Usage: computeSongStats.r [-d directory] [-db db] [-i bird_info] [-c cores]
+doc <- "Usage: computeSongStats.r [-d directory] [-o db] [-i bird_info] [-c cores]
+
+Compute basics song statistics from directory of wav files
+Stats will be inserted into specified MySQL database
 
 -d --dir DIRECTORY  directory to be processed, default = '.'
 -e --bird_info INFO csv file containing information about given bird
--db DATABASE database to write to
+-o --database DATABASE database to write to
 -c --cores CORES number of cores to use, default = 4
 -h --help           show this help text"
 
@@ -25,14 +30,18 @@ if(opt$dir == "NA")
   opt$dir = "."
 if(length(opt$cores) == 0)
   opt$cores = 4
+if(!opt$bird_info) {
+  opt$bird_info = paste(opt$dir, "bird_info.csv", sep="/")
+}
 
-setwd("/media/data2/song/bl63bl44/songs")
-opt = list(dir=".", thresh=.4, cores=10, bird_info="/media/data2/song/bl63bl44/bird_info.csv")
+
+print(paste("Reading bird info from: ", opt$bird_info, sep=""))
+#setwd("/media/data2/song/bl63bl44/songs")
+#opt = list(dir=".", thresh=.4, cores=10, bird_info="/media/data2/song/bl63bl44/bird_info.csv")
 files = list.files(opt$dir, pattern=".wav", full.names = T)
 file_info = file.info(files)
-#file_info$rank = 1:nrow(file_info)
 
-results = lapply(1:length(files), function(ind) {
+results = mclapply(1:length(files), function(ind) {
   result = list() 
   wav = readWave(files[[ind]])
   
@@ -59,7 +68,7 @@ results = lapply(1:length(files), function(ind) {
                         include.lowest=F, 
                         labels=F)
   result$syllables$song_number = ind
-  result$syllables$durations = result$syllables[,2] - result$syllables[,1]
+  result$syllables = result$syllables %>% group_by(motif_number) %>% mutate(syllable_number=1:n())
   
   #### Weiner entropies ####
   result$syllables$ent = apply(result$syllables, 1, function(syl) {
@@ -67,8 +76,8 @@ results = lapply(1:length(files), function(ind) {
   })
   return(result)
 }
-)
-#,mc.cores=opt$cores)
+#)
+,mc.cores=opt$cores)
 names(results) = files
 
 #### Write to DB ####
@@ -106,11 +115,10 @@ dbWriteTable(conn, 'motifs', motifs_df[,c("song_id", "motif_number", "motif_star
 #### Syllables ####
 syllables = lapply(results, function(result) {
    motif_ids = apply(result[['syllables']], 1, function(syllables) {
-    res = dbSendQuery(conn, paste("SELECT motif_id FROM motifs JOIN songs WHERE motifs.motif_number = ", 
-                                  syllables['motif_number'], 
-                                  " AND songs.song_number = ",
-                                  syllables['song_number'],
-                                  " AND bird_id = ", bird_df$bird_id,
+    res = dbSendQuery(conn, paste("SELECT motif_id FROM songs JOIN motifs ON motifs.song_id=songs.song_id WHERE",
+                                  " bird_id = ", bird_df$bird_id,
+                                  " AND songs.song_number = ", syllables['song_number'],
+                                  " AND motifs.motif_number = ", syllables['motif_number'], 
                                   sep=""))
     df = dbFetch(res)
     dbClearResult(res)
@@ -120,5 +128,7 @@ syllables = lapply(results, function(result) {
   result[['syllables']]
 })
 syllables_df = do.call("rbind", syllables)
-dbWriteTable(conn, 'syllables', motifs_df[,c("song_id", "motif_number", "motif_start", "motif_end")], append=T, row.names=F)
+syllables_formatted = syllables_df[,c("motif_id", "syllable_number", "ins", "outs", "ent")]
+to_select = colnames(syllables_formatted) = c("motif_id", "syllable_number", "syllable_start", "syllable_end", "syllable_weinent")
+dbWriteTable(conn, 'syllables', syllables_formatted[,to_select], append=T, row.names=F)
 
