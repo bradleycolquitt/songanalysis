@@ -7,20 +7,23 @@ import MySQLdb as mdb
 
 create_bird_table_sql = """CREATE TABLE IF NOT EXISTS birds\
                            (\
-                               bird_id INT AUTO_INCREMENT PRIMARY KEY,\
+                               bird_id INT PRIMARY KEY,\
                                tags VARCHAR(8),\
-                               age INT,\
                                manipulation VARCHAR(100),\
-                               time_of_death DATETIME\
+                               time_of_death DATETIME,\
+                               song_data_dir VARCHAR(100),\
+                               FOREIGN KEY id_birds_fk (bird_id)\
+                                   REFERENCES sample_db.bird(idbirds)\
                            )
                         """
 create_song_table_sql = '''CREATE TABLE IF NOT EXISTS songs\
                            (\
                                song_id INT AUTO_INCREMENT PRIMARY KEY,\
                                bird_id INT,\
-                               datetime DATETIME,\
-                               song_number SMALLINT UNSIGNED,\
-                               song_duration SMALLINT UNSIGNED,\
+                               song_datetime DATETIME,\
+                               song_start FLOAT(3,2),\
+                               song_end FLOAT(3,2),\
+                               song_number SMALLINT,\
                                FOREIGN KEY bird_song_fk (bird_id)\
                                    REFERENCES birds(bird_id)\
                            )
@@ -31,7 +34,8 @@ create_motif_table_sql = '''CREATE TABLE IF NOT EXISTS motifs\
                                 motif_id INT AUTO_INCREMENT PRIMARY KEY,\
                                 song_id INT,\
                                 motif_number TINYINT UNSIGNED,\
-                                motif_duration SMALLINT UNSIGNED,\
+                                motif_start FLOAT(3,2),\
+                                motif_end FLOAT(3,2),\
                                 FOREIGN KEY song_motif_fk (song_id)\
                                     REFERENCES songs(song_id)\
                             )
@@ -42,8 +46,9 @@ create_syllable_table_sql = '''CREATE TABLE IF NOT EXISTS syllables\
                                    syllable_id INT AUTO_INCREMENT PRIMARY KEY,\
                                    motif_id INT,\
                                    syllable_number TINYINT UNSIGNED,\
-                                   syllable_duration SMALLINT UNSIGNED,\
-                                   syllable_weinent FLOAT(3,3),\
+                                   syllable_start FLOAT(3,2),\
+                                   syllable_end FLOAT(3,2),\
+                                   syllable_weinent FLOAT(5,5),\
                                    FOREIGN KEY motif_syllable_fk (motif_id)\
                                       REFERENCES motifs(motif_id)\
                                )
