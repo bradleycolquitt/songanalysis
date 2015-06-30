@@ -42,4 +42,6 @@ res = data.frame(name=sized_files, song=res)
 
 songs_dir = paste(opt$dir, "songs", sep="/")
 dir.create(songs_dir, showWarnings = F)
-file.copy(as.character(res[,1]), songs_dir, copy.date=T)
+res = file.copy(as.character(res[res[,2],1]), songs_dir, copy.date=T)
+
+if (prod(res)) unlink(sized_dir, recursive=TRUE)
