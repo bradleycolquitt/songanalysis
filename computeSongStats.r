@@ -9,7 +9,6 @@
 suppressMessages(source("~/src/songanalysis/song_util.R"))
 suppressMessages(library(parallel))
 suppressMessages(library(docopt))  
-suppressMessages(library(rPython))
 suppressMessages(library(stringr))
 suppressMessages(library(dplyr))
 suppressMessages(library(DBI))
@@ -20,7 +19,7 @@ Compute basics song statistics from directory of wav files
 Stats will be inserted into specified MySQL database
 
 -d --dir DIRECTORY  directory to be processed, default = '.'
--e --bird_info INFO csv file containing information about given bird
+-i --bird_info INFO csv file containing information about given bird
 -o --database DATABASE database to write to
 -c --cores CORES number of cores to use, default = 4
 -h --help           show this help text"
@@ -30,17 +29,43 @@ if(opt$dir == "NA")
   opt$dir = "."
 if(length(opt$cores) == 0)
   opt$cores = 4
-if(!opt$bird_info) {
+if(length(opt$bird_info) == 0) {
   opt$bird_info = paste(opt$dir, "bird_info.csv", sep="/")
 }
+opt$dir = normalizePath(opt$dir)
 
+#### Read in data, establish DB connection ####
+conn = dbConnect(RMySQL::MySQL(), group="songdb")
+bird_df = read.csv(opt$bird_info, header=T)
 
-print(paste("Reading bird info from: ", opt$bird_info, sep=""))
+#### Check presence of data ####
+dirs = str_split(opt$dir, "/")[[1]]
+tags = dirs[length(dirs)-1]
+bird = bird_df[bird_df$tags==tags,]
+res = dbSendQuery(conn, paste("SELECT count(*) FROM birds WHERE tags = '", tags, "'", sep=""))
+res1 = dbFetch(res)
+dbClearResult(res)
+
+if (res1 > 0) {   
+  print(paste("Song data is present for ", bird[2], ". Overwrite[y/n]?", sep=""))
+  x = readLines(n=1)
+  if (x == "n") {
+      stop("Exiting")
+  } else if (x == "y") {
+      print("Overwriting")
+      dbSendQuery(conn, paste("DELETE FROM birds WHERE birds.tags = '", tags, "'", sep=""))
+  }
+}
+dbWriteTable(conn, "birds", bird, append=TRUE, row.names=FALSE)
+
 #setwd("/media/data2/song/bl63bl44/songs")
 #opt = list(dir=".", thresh=.4, cores=10, bird_info="/media/data2/song/bl63bl44/bird_info.csv")
+
+#### Process wav files ####
 files = list.files(opt$dir, pattern=".wav", full.names = T)
 file_info = file.info(files)
-
+file_info$date = strftime(file_info$mtime, '%Y-%m-%d')
+file_info$time = strftime(file_info$mtime, '%H:%M:%S')
 results = mclapply(1:length(files), function(ind) {
   result = list() 
   wav = readWave(files[[ind]])
@@ -80,28 +105,27 @@ results = mclapply(1:length(files), function(ind) {
 ,mc.cores=opt$cores)
 names(results) = files
 
-#### Write to DB ####
-conn = dbConnect(RMySQL::MySQL(), group="songdb")
-bird_df = read.csv(opt$bird_info, header=T)
-dbWriteTable(conn, "birds", bird_df, append=TRUE, row.names=FALSE)
-
 #### Songs ####
+print("Inserting songs...")
 songs_timings = lapply(results, function(result) {
                       result[['songs']]
                     })
 songs_df = do.call("rbind", songs_timings)
 file_info = cbind(file_info, songs_df)
-file_info$bird_id = bird_df$bird_id
+file_info$bird_id = bird$bird_id
 
 song_formatted = file_info[,c("bird_id", "mtime", "ins", "outs", "song_number")]
+#song_formatted = file_info[,c("bird_id", "date", "time", "ins", "outs", "song_number")]
 colnames(song_formatted) = c("bird_id", "song_datetime", "song_start", "song_end", "song_number")
+#colnames(song_formatted) = c("bird_id", "song_date", "song_time", "song_start", "song_end", "song_number")
 dbWriteTable(conn, "songs", song_formatted, append=TRUE, row.names=F)
 
 #### Motifs ####
+print("Inserting motifs...")
 motifs = lapply(results, function(result) {
   song_ids = apply(result[['motifs']], 1, function(motif) {
     res = dbSendQuery(conn, paste("SELECT song_id FROM songs WHERE song_number = ", motif['song_number'], 
-                            " AND bird_id = ", bird_df$bird_id, sep=""))
+                            " AND bird_id = ", bird$bird_id, sep=""))
     df = dbFetch(res)
     dbClearResult(res)
     return(df)
@@ -113,10 +137,11 @@ motifs_df = do.call("rbind", motifs)
 dbWriteTable(conn, 'motifs', motifs_df[,c("song_id", "motif_number", "motif_start", "motif_end")], append=T, row.names=F)
 
 #### Syllables ####
+print("Inserting syllables...")
 syllables = lapply(results, function(result) {
    motif_ids = apply(result[['syllables']], 1, function(syllables) {
     res = dbSendQuery(conn, paste("SELECT motif_id FROM songs JOIN motifs ON motifs.song_id=songs.song_id WHERE",
-                                  " bird_id = ", bird_df$bird_id,
+                                  " bird_id = ", bird$bird_id,
                                   " AND songs.song_number = ", syllables['song_number'],
                                   " AND motifs.motif_number = ", syllables['motif_number'], 
                                   sep=""))

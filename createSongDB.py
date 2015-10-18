@@ -14,6 +14,7 @@ create_bird_table_sql = """CREATE TABLE IF NOT EXISTS birds\
                                song_data_dir VARCHAR(100),\
                                FOREIGN KEY id_birds_fk (bird_id)\
                                    REFERENCES sample_db.bird(idbirds)\
+                                   ON DELETE CASCADE\
                            )
                         """
 create_song_table_sql = '''CREATE TABLE IF NOT EXISTS songs\
@@ -21,11 +22,12 @@ create_song_table_sql = '''CREATE TABLE IF NOT EXISTS songs\
                                song_id INT AUTO_INCREMENT PRIMARY KEY,\
                                bird_id INT,\
                                song_datetime DATETIME,\
-                               song_start FLOAT(3,2),\
-                               song_end FLOAT(3,2),\
+                               song_start FLOAT(5,3),\
+                               song_end FLOAT(5,3),\
                                song_number SMALLINT,\
                                FOREIGN KEY bird_song_fk (bird_id)\
                                    REFERENCES birds(bird_id)\
+                                   ON DELETE CASCADE\
                            )
                         '''
 
@@ -34,10 +36,11 @@ create_motif_table_sql = '''CREATE TABLE IF NOT EXISTS motifs\
                                 motif_id INT AUTO_INCREMENT PRIMARY KEY,\
                                 song_id INT,\
                                 motif_number TINYINT UNSIGNED,\
-                                motif_start FLOAT(3,2),\
-                                motif_end FLOAT(3,2),\
+                                motif_start FLOAT(4,3),\
+                                motif_end FLOAT(4,3),\
                                 FOREIGN KEY song_motif_fk (song_id)\
                                     REFERENCES songs(song_id)\
+                                    ON DELETE CASCADE\
                             )
                          '''
 
@@ -46,24 +49,14 @@ create_syllable_table_sql = '''CREATE TABLE IF NOT EXISTS syllables\
                                    syllable_id INT AUTO_INCREMENT PRIMARY KEY,\
                                    motif_id INT,\
                                    syllable_number TINYINT UNSIGNED,\
-                                   syllable_start FLOAT(3,2),\
-                                   syllable_end FLOAT(3,2),\
+                                   syllable_start FLOAT(4,3),\
+                                   syllable_end FLOAT(4,3),\
                                    syllable_weinent FLOAT(5,5),\
                                    FOREIGN KEY motif_syllable_fk (motif_id)\
                                       REFERENCES motifs(motif_id)\
+                                      ON DELETE CASCADE\
                                )
                             '''
-
-create_gap_table_sql = '''CREATE TABLE IF NOT EXISTS gaps\
-                          (\
-                              gap_id INT AUTO_INCREMENT PRIMARY KEY,\
-                              motif_id INT,\
-                              gap_number TINYINT UNSIGNED,\
-                              gap_duration SMALLINT UNSIGNED,\
-                              FOREIGN KEY motif_syllable_fk (motif_id)\
-                                  REFERENCES motifs(motif_id)\
-                          )
-                        '''
 
 def main(argv):
     parser = argparse.ArgumentParser()
@@ -86,13 +79,13 @@ def main(argv):
     ## Create tables
     try:
         if args.drop:
-            for x in ['gaps', 'syllables', 'motifs', 'songs', 'birds']:
+            for x in ['syllables', 'motifs', 'songs', 'birds']:
                 cur.execute("""DROP TABLES {0}""".format(x))
         cur.execute(create_bird_table_sql)
         cur.execute(create_song_table_sql)
         cur.execute(create_motif_table_sql)
         cur.execute(create_syllable_table_sql)
-        cur.execute(create_gap_table_sql)
+
     except mdb.OperationalError, e:
         print "MySQLdb operational error %d: %s " % (e.args[0], e.args[1])
 
