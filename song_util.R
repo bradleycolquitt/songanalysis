@@ -9,7 +9,15 @@ library(foreach)
 library(itertools)
 library(R.matlab)
 library(stringr)
-registerDoMC(cores=10)
+library(mclust)
+library(dplyr)
+library(gridExtra)
+library(parallel)
+library(matlab)
+registerDoMC(cores=2)
+
+source("/home/brad/src/songanalysis/threshold.r")
+source("/home/brad/src/songanalysis/clustering.R")
 
 plot_2dspec = function(wav, peaks=NULL) {
   theme_set(theme_classic())
@@ -25,10 +33,30 @@ plot_2dspec = function(wav, peaks=NULL) {
 
 ######## FILTERING/EDITING ########
 
+#' taken from seewave::ffilter 
+highpass_filter = function(wav, from=1800, wl=1024, ovlp=75, wn="hanning", fftw=T) {
+  input = inputw(wave = wav, f = f)
+  wave = input$w
+  f = input$f
+  bit = input$bit
+  #rm(input)
+  n = nrow(wave)
+  step = seq(1, n - wl, wl - (ovlp * wl/100))
+  z = stft(wave = wave, f = f, wl = wl, zp = 0, step = step, 
+            wn = wn, fftw = fftw, complex = TRUE, scale = FALSE)
+  
+  to = f/2
+  F = ceiling(wl * (from/f))
+  T = floor(wl * (to/f))
+  z[-c(F:T), ] = 0
+ 
+  res = istft(z, wl = wl, ovlp = ovlp, wn = wn, output = "Wave", f = f)
+  return(res)
+}
 #' High pass filter Wave object at 1800 Hz
 #' @param wav, the input Wave object
-filtersong = function(wav, band=1800) {
-  return(ffilter(wav, from=band, output="Wave"))
+filtersong = function(wav, band=500) {
+  return(ffilter(wav, from=band, output="Wave", fftw=T, ))
 }
 
 #' Moving average smooth Wave object
@@ -44,6 +72,125 @@ smoothsong = function(wav, window=0.2) {
 }
 
 ######## PROCESSING ########
+
+parse_song = function(file, cluster=F, plot=F) {
+  min_dur = 15
+  max_gap = 10
+  wav = readWave(file)
+  fname = basename(str_replace(file, ".wav", ""))
+  wavf = filtersong(wav)
+  
+  #thresh = threshold_auto(wavf, otsu)
+  thresh = threshold_auto(wavf, mean_sd)
+ 
+  syls = findpeaks_abs(wavf, min_duration = min_dur, max_gap = max_gap, thresh=thresh)
+  if (plot) {
+  par(mfrow=c(1,2))
+  env(wavf, envt="abs", from=1, to=2)
+  abline(h=thresh, col=2)
+  plot_peaks(syls, col=4)
+  }
+  syls$id = paste(fname, 1:nrow(syls), sep="-")
+  song = list(fname = fname, wav=wavf, syllable=syls, thresh=thresh, min_dur = min_dur, max_gap = max_gap)
+  
+  if (cluster) {
+    syl_data = extract_features2(song)
+    mod = mclust_syllable_data(syl_data, plot=T)
+    song$syllable$called = mod$classification
+    return(list(song=song, model=mod))
+  }
+  
+  return(song)
+}
+
+parse_song_batch = function(wdir, range_to_test=c(4:9), cluster=TRUE) {
+  print("Loading data")
+  files = list.files(wdir, pattern=".wav$", full.names = T)
+
+  songd = foreach(i=1:length(files)) %dopar% {
+    # file = row[1,"wav"]
+    file = files[i]
+    print(i)
+    song = parse_song(file)
+    syl_data = extract_features2(song)  
+    return(list(song=song, syl_data=syl_data))
+  }
+  
+  #return(songd)
+  names(songd) = files
+  print("Rearranging data...")
+  
+  wavs = lapply(songd, function(x) x$song$wav)
+  
+  syl_data = lapply(songd, function(x) x$syl_data)
+  syl_data = do.call("rbind", syl_data)
+ 
+  syls = lapply(songd, function(x) x$song$syllable)
+  syls = do.call("rbind", syls)
+  #return(list(syl_data=syl_data, syls=syls))
+  if (cluster) {
+    print("Clustering syllables...")
+    syl.mc = mclust_syllable_data(syls, syl_data, range_to_test = range_to_test, plot=T)
+    #return(syl.mc)
+    
+    syls = syl.mc$syls
+    syls$wav = paste(wdir, str_replace(syls$id, "-[0-9]+$", ".wav"), sep="/")
+    syls.list = split(syls, syls$wav)
+    
+    for(i in names(songd)) {
+      songd[[i]]$song$syllable = syls.list[[i]]
+    }
+    return(list(songs=songd, model=syl.mc$mc))
+    #return(list(wav=wavs, syls=syls.list, syl_data=syl_data, model=syl.mc$mc))
+    #ssyls$called = mod$classification
+    #return(list(syls=syl.mc$syls, model=syl.mc$mc))
+  } else {
+    return(syl_data)
+  }
+  
+}
+
+
+parse_song_batch2 = function(info, cluster=TRUE) {
+  print("Loading data")
+  #songd = mclapply(1:nrow(info), function(i) {
+  songd = foreach(i=1:nrow(info)) %dopar% {
+   # file = row[1,"wav"]
+    file = info[i,"wav"]
+    print(i)
+    wav = readWave(file)
+    fname = basename(str_replace(file, ".wav", ""))
+    wavf = filtersong(wav)
+    
+    thresh = threshold_auto(wavf, otsu)
+    syls = findpeaks_abs(wavf, min_duration = 15, max_gap = 5, thresh=thresh)
+    
+    syls$id = paste(fname, 1:nrow(syls), sep="-")
+    song = list(fname = fname, wav=wavf, syllable=syls)
+    syl_data = extract_features2(song)  
+    return(list(wav = wavf, syls = syls, syl_data=syl_data))
+  #})
+  #}, mc.cores=10)
+  }
+  return(songd)
+  print("Rearranging data...")
+  syl_data = lapply(songd, function(x) x$syl_data)
+  syl_data = do.call("rbind", syl_data)
+  
+  syls = lapply(songd, function(x) x$song.syllable)
+  syls = do.call("rbind", syls)
+  par(mfrow=c(1,1))
+
+  if (cluster) {
+    print("Clustering syllables...")
+    mod = mclust_syllable_data(syl_data, range_to_test = c(4:12), plot=T)
+    songd$syls$called = mod$classification
+    return(list(song=songd, model=mod))
+  } else {
+    return(syl_data)
+  }
+   
+}
 
 #' Read in info for wav and processed mat files
 #' @param wdir, list or character of working directory containing .wav and .not.mat
@@ -85,6 +232,31 @@ load_mat_batch = function(info) {
   #mat$id = 1:nrow(mat)
   return(mat)
 }
+
+song_to_mat = function(song) {
+  #fname = song$fname
+  wav = song$wav
+ # syls = song$syllable
+  ### TODO change NA syllableto '-'
+  mat = list(Fs=wav@samp.rate, 
+             fname=song$fname,
+             labels=song$syllable$called,
+             onsets=song$syllable$ins,
+             offsets=song$syllable$outs,
+             min.int=song$max_gap,
+             min.dur=song$min_dur,
+             threshold=song$thresh,
+             sm.win=2)
+  out = paste(fname, ".not.mat", sep="")
+  write_mat(mat, out)
+  
+}
+write_mat = function(mat, outfile) {
+  writeMat(Fs=mat$Fs, fname=mat$fname, labels=mat$labels, onsets=mat$onsets, offsets=mat$offsets,
+           min_int=mat$min.int, min_dur=mat$min.dur, threshold=mat$threshold, sm_win=mat$sm.win, con=outfile)
+  
+}
+
 ######## SYLLABLE CLASSIFICATION ########
 
 #' Extract song features from wav file and peaks file generated by evsonganaly
@@ -129,6 +301,100 @@ extract_features = function(wav, peaks) {
   return(data)
 }
 
+extract_features2 = function(song) {
+  wav = song$wav
+  peaks = song$syllable
+  peaks = peaks[as.numeric(peaks$ins)>.005,]
+  
+  #offset = .010
+  peaks$mids = (peaks[,"outs"] + peaks[,"ins"]) / 2
+  peaks$ins = (peaks[,"ins"] + peaks[,"mids"]) / 2
+  peaks$outs = (peaks[,"outs"] + peaks[,"mids"]) / 2
+  
+  points = matrix(0, nrow=nrow(peaks), ncol=3)
+#   points[,1] = peaks[,"mids"] - 0.02
+#   points[,2] = peaks[,"mids"] - 0.01
+#   points[,3] = peaks[,"mids"]
+#   points[,4] = peaks[,"mids"] + 0.01
+#   points[,5] = peaks[,"mids"] + 0.02
+
+   points[,1] = peaks[,"mids"] - 0.01
+   points[,2] = peaks[,"mids"]
+   points[,3] = peaks[,"mids"] + 0.01
+  
+  peaks$ins.frames = peaks[,"ins"] * wav@samp.rate
+  peaks$outs.frames = peaks[,"outs"] * wav@samp.rate
+ # peaks[,1:2] = peaks[,1:2] + offset
+
+#   amp = env(wavf, envt="abs", plot=F, norm = T)
+#   amp = amp / (mean(amp) + sd(amp))
+#   amp[amp>1] = 1
+
+  
+  res = 512 / wav@samp.rate
+  freq_limits = c(0, 12)
+  freq_range = seq(0, wav@samp.rate / 2000, length.out=256)
+  ind_range = which(freq_range > freq_limits[1] & freq_range < freq_limits[2])
+  psd1 = NULL
+  
+  weights_init_x = c(1, length(ind_range))
+  weights_init_y = c(1, 10)
+  weights_target = 1:length(ind_range)
+  weights = approx(weights_init_x, weights_init_y, weights_target)$y
+  
+  
+  data = foreach(row=isplitRows(points, chunkSize=1), .inorder = T, .combine="rbind") %do% {
+    #tomid = row[1,"mids"] - row[1,"ins"]
+    
+    #if (tomid < res) {
+    #  psd1 = c(meanspec(wav, wl=512, fftw=T, PSD=T, norm = F, plot=F,  at=as.numeric(row["in"]))[ind_range,"y"],
+    #           meanspec(wav, wl=512, fftw=T, PSD=T, norm = F, plot=F,  at=as.numeric(row["mids"]))[ind_range,"y"])
+               #meanspec(wav, wl=512, fftw=T, PSD=T, norm = F, plot=F,  at=as.numeric(row["outs"]))[ind_range,"y"])
+    #} else {
+     # psd1 = c(meanspec(wav, wl=512, fftw=T, PSD=T, norm=F,  plot=F, from=as.numeric(row["ins"]), to=as.numeric(row["mids"]))[ind_range,"y"],
+    #         meanspec(wav, wl=512, fftw=T, PSD=T, norm=F, plot=F, from=as.numeric(row["mids"]), to=as.numeric(row["outs"]))[ind_range,"y"])
+    psd1 = foreach(x= isplitCols(row, chunkSize=1), .combine="c") %do% {
+      d = seewave::spec(wav, wl=512, fftw=T, PSD=F, norm=F,  plot=F, at=x)[ind_range,"y"]
+      d * weights
+      #d
+    } 
+      #c(spec(wav, wl=512, fftw=T, PSD=T, norm=F,  plot=F, at=as.numeric(row["ins"]), to=as.numeric(row["mids"]))[ind_range,"y"],
+      #               spec(wav, wl=512, fftw=T, PSD=T, norm=F, plot=F, at=as.numeric(row["mids"]), to=as.numeric(row["outs"]))[ind_range,"y"])
+      #psd1 = c(spec(wav, wl=512, fftw=T, PSD=T, norm = F, plot=F, at=as.numeric(row["ins"]))[ind_range,"y"],
+      #         spec(wav, wl=512, fftw=T, PSD=T, norm = F, plot=F, at=as.numeric(row["mids"]))[ind_range,"y"])
+               #spec(wav, wl=512, fftw=T, PSD=T, norm = F, plot=F, at=as.numeric(row["outs"]))[ind_range,"y"])
+      #psd1 = spectro(wav, wl=512, fftw=T, PSD=T, norm = F, plot=F, from=as.numeric(row["ins"]), to=as.numeric(row("outs")))
+    #}
+#     amp1 = amp[as.numeric(row["ins.frames"]):as.numeric(row["outs.frames"])]
+#     a = round(seq(1, length(amp1), length.out=200))
+#     cuts = matrix(0, nrow=length(a), ncol=2)
+#     cuts[,1] = a
+#     for (i in 1:(nrow(cuts)-1)) {
+#       cuts[i,2] = cuts[i+1, 1] - 1
+#     }
+#   
+#     amp1 = apply(cuts, 1, function(x) {
+#       mean(amp1[x[1]:x[2]])
+#     }) 
+    #amp1 = amp1 / max(amp1)
+    
+    #psd1 = c(psd1, amp1)
+    #psd1 = predict(loess(psd1~c(1:length(psd1)), span=.05))
+    #psd1 = na.omit(stats::filter(psd1, rep(1, times=20) / 20))
+    #max_psd = max(psd1)
+    #print(max_psd)
+    #perc = .1
+    #psd1 = psd1 - (max_psd * perc)
+    #psd1[psd1<1] = 1
+    #psd1[psd1<1] = 1
+    #return()
+    return(psd1)
+    #psd1 = meanspec(wavf, fftw = T, from = as.numeric(row["ins"]), to = as.numeric(row["outs"]))
+  }
+  rownames(data) = peaks$id
+  return(data)
+}
+
 extract_features_batch = function(info) {
   data = foreach(row=isplitRows(info, chunkSize=1), .combine="rbind") %dopar% {
     wav = readWave(row[1, "wav"])
@@ -153,6 +419,19 @@ rf_syllables = function(data) {
   fit.rf = randomForest(labels~., data, ntree=5000)
   return(fit.rf)
 }
+
+#' Train random forest classifier on syllable labels and song features
+#' @param data, song feature file as generated by extract_features
+#' @return randomForest object
+rf_syllables2 = function(data) {
+  #ind = sample(1:nrow(data), replace = F, size = round(nrow(data)*.80))
+  #train = data[ind,]
+  #test = data[-ind,]
+  #fit.rf = randomForest(labels~., train, xtest = test[,2:ncol(test)], ytest = test[,1], ntree=5000)
+  fit.rf = randomForest(labels~., data, ntree=5000)
+  return(fit.rf)
+}
+
 
 predict_syllables = function(rf, data) {
   pred = predict(rf, data)  
@@ -180,74 +459,137 @@ test_rf_sample_size = function(data) {
   return(data.frame(ind = test_ind, error= rs))
 }
 
-mclust_syllable_data = function(data, range_to_test=c(4:12), plot=FALSE) {
-  pc = prcomp(scale(data))
-  pred = predict(pc, data)
-  mc = Mclust(pred, G=range_to_test)
-  if (plot) {
-    plot(mc)
-  }
-  return(mc)
-  #return(data.frame(called = mc$classification, data))
-}
-
 plot_clustering_3d = function(data) {
   require(plotly)
-  #x_vec = data$PC1
-  #y_vec = data$PC2
-  #z_vec = data$PC3
   plot_ly(data, x = PC1, 
           y = PC2, 
           z = PC3, 
-          color = km8,
-          size = PC4,
+          color = sc,
+          #size = PC4,
           type = "scatter3d", 
           mode = "markers", 
           filename="r-docs/3d-scatter")
-#   data <- list(
-#     x = x_vec,
-#     y = x_vec,
-#     z = z_vec,
-#     type = "points")
-}
-plot_classfied_syllable = function(peaks) {
-  #peaks_s = split(peaks, peaks$called)
-  peaks_s = peaks %>% group_by(called) %>% do(sample_n(., 10))
-  peaks_s1 = split(peaks_s, peaks_s$called)
-  plots = lapply(peaks_s1, function(d)  {
-  })
-  
-  return(peaks_s)
 }
 
-plot_spectro = function(wav, subregion=NULL, wl=512, overlap=50) {
-  duration = NULL
+# plot_classified_syllable_multi = function(songs, syls, num_syls=5) {
+#   
+#   syls_sub = syls %>% group_by(called) %>%$ do({sample_n(., num_syls)})
+#   song_names = str_replace(syls_sub$id, "-[0-9]", ".wav")
+#   
+#   
+# }
+
+plot_syllable_range = function(song, duration=2) {
+  wav = song$wav
+  peaks = song$syllable
+  dots <- lapply(label_name, as.symbol)
+  
+  peaks_s = peaks %>% group_by_(.dots=dots) %>% do({
+    if (nrow(.)<=num_syls) {
+      return(.)
+    } else {
+      return(sample_n(., num_syls))  
+    }
+  })
+  peaks_s1 = split(peaks_s, peaks_s[,label_name])
+  #par(mfrow)
+  
+  
+  
+}
+plot_classified_syllable = function(song, label_name="called", num_syls=5) {
+  
+  wav = song$wav
+  peaks = song$syllable
+  dots <- lapply(label_name, as.symbol)
+  
+  peaks_s = peaks %>% group_by_(.dots=dots) %>% do({
+    if (nrow(.)<=num_syls) {
+      return(.)
+    } else if (nrow(.) == 0) {
+      return(NA)
+    } else {
+      return(sample_n(., num_syls))  
+    }
+  })
+  peaks_s = droplevels(peaks_s)
+  peaks_s1 = split(peaks_s, peaks_s[,label_name])
+  #par(mfrow)
+  plots = lapply(1:length(peaks_s1), function(d)  {
+    plot_multiple_syl(wav, peaks_s1[[d]][,1:2], title=names(peaks_s1)[d] )
+  })
+  
+  ncol = 3
+  nrow = ceiling(length(plots) / ncol)
+  plot.list = c(plots, list(ncol=ncol, nrow=nrow))
+  do.call(grid.arrange, plot.list)
+}
+
+plot_spectro = function(wav, subregion=NULL, wl=512, overlap=50, labels=NULL, label_name = "called") {
+  require(matlab)
+  spectrogram = spectro(wav, plot = FALSE, tlim=subregion, fftw=T)
+  frequency = rep(spectrogram$freq, times = ncol(spectrogram$amp))
+  time = rep(spectrogram$time, each = nrow(spectrogram$amp))
+  amplitude = as.vector(spectrogram$amp)
+  df = data.frame(time, frequency, amplitude)
+  gg = ggplot(df, aes_string(x = "time", 
+                            y = "frequency",
+                            z = "amplitude"))
+  gg = gg + stat_contour(aes(fill=..level..), geom="polygon", binwidth=1)
+  gg = gg + scale_fill_gradientn("Amplitude, (db)",
+                                 colours=jet.colors(7), 
+                                 breaks=c(-40, -15, 0),
+                                 limits=c(-40, -15),
+                                 na.value="transparent")
+  gg = gg + labs(x="Time", y="Frequency") + ylim(0,10) + xlim(subregion)
+  
+  if (!is.null(labels)) {
+    labels$time = (labels$outs + labels$ins) / 2
+    labels = cbind(labels, data.frame(frequency=0, amplitude=0))
+    gg = gg + geom_text(data=labels, aes_string(label=label_name))
+  }
+  #print(gg)
+  return(gg)
+}
+
+plot_multiple_syl = function(wav, subregions, wl=512, overlap=50, title="") {
   input = inputw(wav)
   wave = input$w
   f = input$f
-  if (!is.null(subregion)) {
-    duration = diff(subregion)
-  } else {
-    duration = duration(wav)
-  }
+  subregions$ind = 1:nrow(subregions)
   
-  sf = subregion * f
-  print(sf)
-  n = nrow(wave)
-  if (!is.null(subregion)) {
-    step <- seq(sf[1], sf[2] - wl, wl - (overlap * wl/100))
-  } else {
-    step <- seq(1, n - wl, wl - (overlap * wl/100))
-  }
-  z = stft(wave = wave, f = f, wl = wl, zp = 0, step = step, 
-            wn = "hanning", fftw = TRUE, scale = FALSE, complex = FALSE)
+  steps =  lapply(1:nrow(subregions), function(i) {
+    sf = subregions[i,] * f
+    seq(sf[1,1], sf[1,2], wl - (overlap * wl/100))
+  })
+  steps_num = sum(unlist(lapply(steps, length)))
+  steps_max = max(unlist(lapply(steps, length)))
+  data = matrix(0, nrow=(wl/2), ncol=(steps_max + 5) * nrow(subregions))
+  for(row in 1:nrow(subregions)) {
+   
+    step = steps[[row]]
+    z = stft(wave = wave, f = f, wl = wl, zp = 0, step = step, 
+             wn = "hanning", fftw = TRUE, scale = T, complex = FALSE)
+    #z = 20 * log10(z)
+    data[,(row -1) * (steps_max + 5) + (1 : ncol(z))] = z
+  }  
   
-  zm = melt(z)
-  return(z)
-  
+  datam = melt(data)
+  maxz = max(datam$value)
+  theme_set(theme_classic())
+  gg = ggplot(datam, aes(Var2, Var1, z=value)) + stat_contour(aes(fill=..level..), geom="polygon", binwidth=.1)
+  #gg = gg + scale_fill_gradientn(colours=rainbow(100), limits=c(50, maxz), breaks = seq(maxz-10, maxz), na.value="white" )
+  #gg = gg + scale_fill_gradientn(colours=rainbow(7), guide=T, values = seq(maxz-100, maxz), rescaler = function(x, ...) x, oob = identity, na.value="white" )
+  gg = gg + scale_fill_gradientn(colours=jet.colors(7), breaks=c(.1, 1),
+                                 limits=c(0, 1), na.value="transparent")
+  gg = gg + labs(x="", y="", title=title) + theme(axis.line=element_blank(),axis.text.x=element_blank(),
+                                axis.text.y=element_blank(),axis.ticks=element_blank(),
+                                axis.title.x=element_blank(),
+                                axis.title.y=element_blank(),legend.position="none",
+                                panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+                                panel.grid.minor=element_blank(),plot.background=element_blank())
+  return(gg)
 }
-
-
 
 ######## PEAK ANALYSIS ########
 
@@ -281,9 +623,10 @@ findpeaks = function(wav, min_duration=50, max_gap=75, thresh=0.1) {
 #' @param max_gap, maximum distance (in ms) between peaks before merging
 #' @param thresh, threshold for peak definition, defined as fraction of max amplitude
 #' @return data.frame containing peak starts (col1) and stops (col2) defined in seconds
-findpeaks_abs = function(wav, min_duration=50, max_gap=75, thresh=1E7) {
+findpeaks_abs = function(wav, min_duration=50, max_gap=75, max_duration=300, thresh=1E7) {
   samp_rate = wav@samp.rate
   min_duration = min_duration * samp_rate / 1000 
+  max_duration = max_duration * samp_rate / 1000 
   max_gap = max_gap * samp_rate / 1000
   wav_env = env(wav, envt = "abs", plot=F)
   #max_val = max(wav_env)
@@ -295,24 +638,30 @@ findpeaks_abs = function(wav, min_duration=50, max_gap=75, thresh=1E7) {
                         above_thresh_ind[thresh_diff+1]),
                   outs=c(above_thresh_ind[thresh_diff], 
                          above_thresh_ind[length(above_thresh_ind)]))
-  return(df[(df[,2] - df[,1])>min_duration,] / samp_rate)
-  if ((df[,2] - df[,1]) == 0) return(data.frame())
-  return (df / samp_rate)
+  durations = df[,2] - df[,1]
+  ind = durations>min_duration & durations<max_duration
+  return(df[ind,] / samp_rate)
+  #if ((df[,2] - df[,1]) == 0) return(data.frame())
+  #return (df / samp_rate)
 }
 
 
 #' Find frequency peaks in PSD
 #' @param wav, the input Wave object
 #' @param min_size, minimum band size of peak
-#' @param max_gap, maximum distance (in Hz) between peaks before merging
+#' @param max_gap, maximum distance (in kHz) between peaks before merging
 #' @param thresh, threshold for peak definition, defined as fraction of max amplitude
 #' @return data.frame containing peak starts (col1) and stops (col2) defined in seconds
-findpeaks_freq = function(mat, min_value=2, min_size=50, max_gap=100, thresh=0.1) {
+findpeaks_freq = function(mat, min_value=2, min_size=50, max_gap=100, thresh=0.1, absolute=FALSE) {
+  
   mat = mat[mat[,1]>min_value,]
-  max_val = max(mat[,2])
-  mat[,2] = mat[,2] / max_val
-  scale_val = (mat[2,1] - mat[1,1]) * 1000
+  if (!absolute) {
+    max_val = max(mat[,2])
+    mat[,2] = mat[,2] / max_val
+  }
+  scale_val = (mat[2,1] - mat[1,1])
   above_thresh_ind = which(mat[,2]>thresh) 
+  if (length(above_thresh_ind) == 0) return(data.frame())
   thresh_diff = which(diff(above_thresh_ind)>(max_gap/scale_val))
   df = data.frame(ins=c(mat[above_thresh_ind[1],1], 
                         mat[above_thresh_ind[thresh_diff+1],1]),
@@ -344,7 +693,15 @@ interpeak_midpoint = function(peaks) {
 
 plot_peaks = function(peaks, yval=-1E7, ...) {
   apply(peaks, 1, function(peak) {
-    segments(peak[1], yval, peak[2], yval, ...)
+    id = NULL
+    
+    if (length(grep('-', peak[3]))>0) {
+      id = str_split(peak[3], "-")[[1]][2]
+    } else {
+      id = peak[3]
+    }
+    segments(as.numeric(peak[1]), yval, as.numeric(peak[2]), yval, ...)
+    text(as.numeric((as.numeric(peak[2]) + as.numeric(peak[1]))/2), y=yval + yval*.5, labels = id)
   })
 }
 
@@ -358,7 +715,7 @@ plot_peaks = function(peaks, yval=-1E7, ...) {
 wiener_entropy = function(wav, band=NULL, subregion=NULL) {
   psd = NULL
   if (!is.null(subregion)) {
-    psd = spec(wav, wl=512, plot=F, PSD=T, from=subregion[1], to=subregion[2])
+    psd = seewave::spec(wav, wl=512, plot=F, PSD=T, from=subregion[1], to=subregion[2], fftw=T)
   } else {
     psd = spec(wav, wl=512, plot=F, PSD=T)
   }
@@ -386,6 +743,52 @@ wiener_entropy_var = function(wav, window=16, overlap=50, band=NULL, subregion=N
   var(res)
 }
 
+wiener_entropy_var2 = function(wav,  window=.016, overlap=50, band=NULL, subregion=NULL) {
+  
+  steps = seq(0, subregion[2]-subregion[1], window * overlap / 100)
+  #print(steps)
+  wav_duration = seewave::duration(wav)
+  
+  
+  #subregion2 = matrix(0, nrow=length(steps), ncol=2)
+  #subregion2[,1] = subregion[1] + step
+  #subregion2[,2] = subregion2[,1] + window
+  subregion2 = subregion
+  #subregion2 = subregion2[subregion2[,2]<wav_duration,]
+  res = sapply(steps, function(step) {
+    subregion2[1] = subregion[1] + step
+    subregion2[2] = subregion2[1] + window
+    if (subregion2[2] > wav_duration) return(NA)
+    wiener_entropy(wav, band=band, subregion=subregion2)
+  })
+  res = na.omit(res)
+  data.frame(went_mean = log2(mean(res)), went_var = var(res))
+}
+
+wiener_entropy_var2.1 = function(wav,  window=.016, overlap=50, band=NULL, subregion=NULL) {
+  
+  steps = seq(0, subregion[2]-subregion[1], window * overlap / 100)
+  #print(steps)
+  wav_duration = duration(wav)
+  #subregion2 = subregion
+  subregion2 = matrix(0, nrow=length(steps), ncol=2)
+  subregion2[,1] = subregion[1] + steps
+  subregion2[,2] = subregion2[,1] + window
+  #print(subregion2)
+  #subregion2 = subregion2 / 1000
+  subregion2 = subregion2[subregion2[,2]<wav_duration,]
+  res = apply(subregion2, 1, function(row) {
+    
+    wiener_entropy(wav, band=band, subregion=row)
+    #subregion2[1] = subregion[1] + step
+    #subregion2[2] = subregion2[1] + window
+    #if (subregion2[2] > wav_duration) return(NA)
+    
+  })
+  res = na.omit(res)
+  data.frame(went_mean = log2(mean(res)), went_var = var(res))
+}
+
 #' Calculate Weiner entropy of given frequency band in PSD
 #' @param psd, PSD as output from spec(PSD=T)
 #' @param band, selected frequency band
@@ -406,10 +809,13 @@ weiner_entropy_psd = function(psd, region=c(6,8)) {
 #'   \item{wev}{variance of wiener entropy across syllable}
 wiener_stats = function(info, band=c(2000, 10000)) {
   d = foreach(row=isplitRows(info, chunkSize=1)) %dopar% {
+   # print(row["mat"])
     out = load_mat(row["mat"])
     wav = readWave(row[1, "wav"])
-    out = out %>% rowwise() %>% mutate(went=log2(wiener_entropy(wav, band=band, subregion=c(onsets, offsets))), 
-                                       wev=wiener_entropy_var(wav, band=band, subregion=c(onsets, offsets)))
+    #out = transform(out, onsets=onsets * 1000, offsets = offsets * 1000)
+    out = out %>% rowwise() %>% do({
+      cbind(., wiener_entropy_var2(wav, band=band, subregion=c(.$onsets, .$offsets)))
+    })
     out$mat = row[1, "mat"]
     out
   }
@@ -438,10 +844,16 @@ songfinder = function(wav, band=c(5000,7000),
   return(nrow(peaks) > 0)
 }
 
-songfinder2 = function(wav, max_gap = 10, min_duration = 15, thresh=0.2, min_num_peaks = 5) {
-  wav = filtersong(wav)
-  peaks = findpeaks_abs(wav, min_duration=min_duration, max_gap=max_gap, thresh=thresh)
-  return(nrow(peaks) / duration(wav) > min_num_peaks)
+songfinder2 = function(wav, max_gap = 10, min_duration = 15, max_duration = 300 , thresh=0.2, min_num_peaks = 5, max_num_peaks=10) {
+  wavf = filtersong(wav)
+  #wavf = highpass_filter(wav)
+  peaks = findpeaks_abs(wavf, min_duration=min_duration, max_gap=max_gap, max_duration=max_duration, thresh=thresh)
+  #return(peaks)
+  if (nrow(peaks) == 0) return(FALSE)
+  rate = nrow(peaks) / (peaks[nrow(peaks),2] - peaks[1,1])
+  total_duration = peaks[nrow(peaks),2] - peaks[1,1]
+  #print(rate)
+  return((total_duration > 1) & (rate > min_num_peaks ) & (rate < max_num_peaks ))
 }
 
 songfinder_psd = function(psd, 
@@ -507,7 +919,8 @@ ggplot_cepstrum = function(data) {
 
 ######## Fundamental frequency ########
 calc_ff = function(wav, peaks) {
-  psd = apply(peaks, 1, function(x) spec(wav, PSD=T, from=x[1], to=x[2], plot=F))
+  
+  psd = apply(peaks, 1, function(x) spec(wav, wl = 512, PSD=T, from=x[1], to=x[2], plot=F))
   psd_peaks = lapply(psd, function(data) {
     total_power = sum(data[,2])
     d = findpeaks_freq(data, min_size=0)
@@ -518,28 +931,125 @@ calc_ff = function(wav, peaks) {
   return(psd_peaks)
 }
 
+calc_ff = function(wav, mat) {
+  
+  #psd = apply(mat, 1, function(x) spec(wav, PSD=T, from=as.numeric(x["onsets"]), to=as.numeric(x["offsets"]), plot=F))
+  #if (class(psd) == "matrix") psd = list(cbind(1:nrow(psd), psd))
+  freqs = unlist(lapply(psd, function(data) {
+    d = findpeaks_freq(data, min_value=2, max_gap=1000, min_size=0, thresh=.1)
+    maxes = apply(d, 1, function(x) max(psd[x[1]:x[2]]))
+    d = d[which.max(maxes),]
+    #d_mean = apply(d, 1, mean)
+    #d_mean = data.frame(ind=1:length(d_mean), d_mean=d_mean)
+    #d_freq = apply(d_mean, 1, function(x) x[2]/x[1])
+    #mean(d_freq)
+  }))
+  
+  #if (nrow(mat) == 1) {
+  #  return(c(mat, freqs))
+  #} else {
+  return(cbind(mat, freqs))
+  #}
+}
+
 #' Calculate fundamental frequency by averaging harmonics
 #' @param wav, input Wave file
 #' @param mat, data.frame containing onsets, offsets, and label as generated by load_mat
 #' @return mat file supplemented with calculated fundamental frequency
 calc_ff2 = function(wav, mat) {
+  
   psd = apply(mat, 1, function(x) spec(wav, PSD=T, from=as.numeric(x["onsets"]), to=as.numeric(x["offsets"]), plot=F))
+  if (class(psd) == "matrix") psd = list(cbind(1:nrow(psd), psd))
   freqs = unlist(lapply(psd, function(data) {
+    
     d = findpeaks_freq(data, min_value=2, max_gap=1000, min_size=0, thresh=.1)
     d_mean = apply(d, 1, mean)
     d_mean = data.frame(ind=1:length(d_mean), d_mean=d_mean)
     d_freq = apply(d_mean, 1, function(x) x[2]/x[1])
     mean(d_freq)
   }))
-  return(cbind(mat, freqs)) 
+  
+  return(cbind(mat, freqs))
+
 }
 
-calc_freq_rolling = function(wav, step = 4, duration = 8, band=NULL, subregion=NULL) {
-  steps = seq(0, subregion[2]-subregion[1], step)
-  res = sapply(steps, function(step) {
-    calc_freq(wav, offset=step, duration=duration, band=band, subregion=subregion)
-  })
-  mean(res)
+calc_ff2_batch = function(info, label="a") {
+  d = foreach(row=isplitRows(info, chunkSize=1), .combine="rbind" ) %dopar% {
+    wav = readWave(row[1, "wav"])
+    wavf = filtersong(wav)
+    mat = load_mat(row[1, "mat"])
+    
+    mat = mat %>% filter(labels==label)
+    if (nrow(mat) > 0) {
+      return(cbind(calc_ff2(wavf, mat), mat = row[1,"mat"]))
+    } else {
+      return(NULL)
+    }
+  }
+  d
+}
+calc_freq_rolling_batch = function(info, label="a", offset=8) {
+  d = foreach(row=isplitRows(info, chunkSize=1), .combine="rbind" ) %do% {
+    print(row[1,"wav"])
+    wav = readWave(row[1, "wav"])
+    wavf = filtersong(wav)
+    mat = load_mat(row[1, "mat"])
+    
+    
+    mat = mat %>% filter(labels==label)
+    #mat = mat[mat$offsets - mat$onsets]
+    if (nrow(mat) > 0) {
+      res = mat %>% rowwise() %>% do({calc_freq_rolling(wavf, offset=offset, subregion=unlist(.[1:2]))})
+      return(cbind(mat, res, mat = row[1,"mat"]))
+    } else {
+      return(NULL)
+    }
+  }
+  d
+}
+calc_freq_rolling = function(wav, offset=4, step = 4, duration = 8, subregion=NULL, fraction_max=.05) {
+  wl = 512
+  res = 512 / wav@samp.rate
+  offset = offset / 1000
+  null_df = data.frame(freq = NA)
+  if (!is.null(subregion)) {
+    from = subregion[1] + offset
+    to = subregion[2] - offset
+    if ((to - from) < res ) return(null_df)
+    psd = spectro(wav, wl=512, norm=F, fftw = T, dB = NULL, plot=F, PSD=T, tlim=c(from, to), ovlp=50)
+  } else {
+    stop("Please specify subregion!")
+  }
+  
+  max_overall = max(psd[[3]])
+  
+  peaks = apply(psd[[3]], 2, function(x) {
+    f = findpeaks_freq(cbind(psd[[2]], x), 
+                       min_value=2, 
+                       max_gap=1, 
+                       min_size=0, 
+                       thresh=max_overall*fraction_max, 
+                       absolute=T)
+    if (nrow(f)==0) return(NA)
+  
+    power = apply(f, 1, function(peak) {
+      inds = c(which(psd[[2]]==peak[1]), which(psd[[2]]==peak[2])) # select frequency corresponding to power peak
+      mean(x[inds])
+    })
+    
+    fmean = cbind(freq = rowMeans(f), power) 
+    return(fmean[which.min(fmean[,1]),])
+    })
+  
+  if (length(na.omit(peaks)) == 0) return(null_df)
+  if (class(peaks) == "list") {
+    peaks = na.omit(do.call(rbind, peaks))
+  } else {
+    peaks = t(peaks)
+    #print("here")
+  }
+  total_power = sum(peaks[,"power"])
+  return( data.frame(freq = as.numeric(t(peaks[,"freq"]) %*% peaks[,"power"] / total_power )))
 }
 
 calc_freq = function(wav, offset=10, duration=8, band=NULL, subregion=NULL) {
@@ -582,27 +1092,81 @@ compute_class = function(res, trues) {
 }
 
 ######## SEQUENCING ########
-syllable_transition = function(mat) {
+syllable_transition = function(mat, select=NULL) {
   d.labels = unlist(lapply(mat, function(x) as.character(x$labels)))
   label_list = lapply(d.labels, function(x) unlist(str_split(x, "")))
-  label_list_cat = unlist(label_list)
+  return(syl_trans(label_list, select=select))
+}
+syllable_transition_df = function(df_list) {
+    label_list = lapply(df_list, function(x) as.character(x$labels))
+  return(syl_trans(label_list))
+#   label_data = df$labels
+#   totals = table(label_data)
+#   labels = names(totals)
+#   
+#   labels2 = c("start", labels, "end")
+#   counts = matrix(0, nrow=length(labels2), ncol=length(labels2), dimnames=list(labels2, labels2))
+#   
+#   for (i in 1:length(label_list)) {
+#     curr = label_list[[i]]
+#     counts["start", curr[1]] = counts["start", curr[1]] + 1
+#     for (j in 1:(length(curr)-1)) {
+#       counts[curr[j],curr[j+1]] = counts[curr[j],curr[j+1]] + 1
+#     }
+#     counts[curr[length(curr)], "end"] = counts[curr[length(curr)], "end"] + 1
+#   }
+#   return(counts)
+  
+  
+}
 
+syl_trans = function(label_list, select) {
+  label_list_cat = unlist(label_list)
+  
   totals = table(label_list_cat)
-  labels = names(totals)
+  labels = NULL
+  if (is.null(select)) {
+    labels = names(totals)
+  } else {
+    labels = select
+  }
   
   labels2 = c("start", labels, "end")
   counts = matrix(0, nrow=length(labels2), ncol=length(labels2), dimnames=list(labels2, labels2))
   
   for (i in 1:length(label_list)) {
+    #print(paste("i", i, sep=""))
     curr = label_list[[i]]
-    counts["start", curr[1]] = counts["start", curr[1]] + 1
+    curr = curr[curr %in% labels]
+    if (length(curr) <= 1) next
+      counts["start", curr[1]] = counts["start", curr[1]] + 1
     for (j in 1:(length(curr)-1)) {
-      counts[curr[j],curr[j+1]] = counts[curr[j],curr[j+1]] + 1
+        counts[curr[j],curr[j+1]] = counts[curr[j],curr[j+1]] + 1
     }
     counts[curr[length(curr)], "end"] = counts[curr[length(curr)], "end"] + 1
   }
-  return(counts)
+  return(counts)  
 }
+
+
+process_syllable_matrix = function(info, select=NULL, norm="total") {
+    d = lapply(info$mat, readMat)
+    syl = syllable_transition(d, select)
+    if (!is.null(select)) {
+      syl = syl[rownames(syl) %in% select, colnames(syl) %in% select]
+    }
+    if (norm=="total") {
+      syl = syl / sum(c(syl))
+    } else if (norm=="row") {
+      syl = sweep(syl, MARGIN = 1, STATS = rowSums(syl), "/")
+    }
+    m = melt(syl)
+    colnames(m)[1:2] = c("From", "To")
+    m = m %>% filter(From!="end") %>% filter(To!="start") 
+    return(m)
+}
+
+
 
 #' Calculate repeat lengths by bout
 #' @param data, info file as returned from load_mat_info
@@ -626,14 +1190,14 @@ repeat_lengths = function(data) {
 }
 
 mean_transition_entropy_long = function(long_data) {
-  mean_transition_entropy(acast(long_data, From~To))
+  mean_transition_entropy(acast(long_data, From~To, fun.aggregate = sum))
 }
 
 mean_transition_entropy = function(mat) {
+  mat = mat / sum(c(mat))
   res = apply(mat, 1, function(x) {
     y = x[x>0]
     sum(y * log2(y))
-    #sapply(x, function(y) y * log2(y))
   })
   data.frame(transition_entropy = -1 * sum(res))
 }
