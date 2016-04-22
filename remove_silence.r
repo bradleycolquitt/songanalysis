@@ -17,7 +17,7 @@ options(warn=-1)
 suppressMessages(source("~/src/songanalysis/song_util.R"))
 suppressMessages(source("~/src/songanalysis/threshold.r"))
 
-opt = list(dir="/mnt/tutor_home/data/or46pu77/recordings/2016-03-02", cores=6)
+#opt = list(dir="/mnt/tutor_home/data/or46pu77/recordings/2016-03-02", cores=6)
 #opt = list(dir="/mnt/bengal_home/song/gr44gr48", no_filter_by_size=1, cores=10)
 if(opt$dir == "NA")
   opt$dir = "."
