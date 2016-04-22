@@ -37,10 +37,18 @@ info$fname = rownames(info)
 info$date = strftime(info$mtime, '%Y-%m-%d')
 
 song_by_date = table(info$date)
-song_by_date = song_by_date[song_by_date>opt$nsongs]
+#if (song_by_date > opt$nsongs)
+#song_by_date = song_by_date[song_by_date>opt$nsongs]
 
 set.seed(1)
-info1 = info %>% filter(info$date %in% names(song_by_date)) %>% group_by(date) %>% sample_n(opt$nsongs)
+
+info1 = info %>% filter(info$date %in% names(song_by_date)) %>% group_by(date) %>% do({
+  if (nrow(.) < opt$nsongs) {
+    return(.)
+  } else {
+    sample_n(. , opt$nsongs)
+  }
+})
 
 select_dir = paste(opt$dir, "select", sep="/")
 dir.create(select_dir, showWarnings = F)

@@ -1,9 +1,31 @@
+suppressWarnings(library(tuneR))
+suppressWarnings(library(graphics))
+suppressWarnings(library(seewave))
 INT_MIN = 1
 
-threshold_auto = function(wav, method) {
-  amp = env(wav, envt="abs", plot=F)
-  amp = amp[amp[,1]<=5E6,]
-  method(amp)
+threshold_auto = function(wav, method, log=F, absolute=T, floor=F, ...) {
+  amp = NULL
+  if (absolute) {
+    amp = seewave::env(wav, envt="abs", plot=F)
+  } else {
+    amp = wav@left^2
+  }
+  
+  median_amp = median(amp)
+  if (floor) 
+    amp =  amp[amp>median_amp]
+  
+  if (log) {
+    amp = log(amp+1)
+  }
+  #amp = amp[amp[,1]<=5E6,]
+  val = method(amp, ...)
+  if (log) {
+    val = exp(val)
+  }
+  #if(floor)
+  #  val = val + median_amp
+  val
 }
 
 # currently takes too long, will need dynamic programming approach
@@ -210,7 +232,7 @@ renyi = function(data) {
   return (opt_threshold)
 }
 
-huang = function(data) {
+huang = function(data, ...) {
   threshold = 0
   
   breaks =seq(min(data), max(data), length.out = 1000)
@@ -326,7 +348,7 @@ huang = function(data) {
 }
 
 #' Implementation of Otsu automatic thresholding algo
-otsu = function(data) {
+otsu = function(data, factor=1, ...) {
   breaks = seq(min(data), max(data), length.out = 1000)
   data = data[data<max(breaks)]
   total = length(data)
@@ -359,5 +381,17 @@ otsu = function(data) {
       maximum = between
     }
   }
-  (threshold1 + threshold2 )/2
+  (threshold1 + threshold2 )/2 * factor
+}
+
+mean_sd = function(data, factor = 0) {
+  return(mean(data) + sd(data) * factor)
+}
+
+median_sd = function(data, factor = 0) {
+  return(median(data) + sd(data) * factor)
+}
+
+max_amp = function(data, factor) {
+  return(max(data) * factor)
 }
