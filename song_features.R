@@ -26,6 +26,18 @@ calc_amp = function(wav, subsamp=1, band=NULL) {
   }
 }
 
+calc_max_mean_ratio = function(wav, subsamp=10, band=NULL) {
+  amp_env = calc_amp(wav, subsamp=subsamp)
+  return(max(amp_env) / mean(amp_env))
+}
+
+calc_max_median_ratio = function(wav, subsamp=10, band=NULL) {
+  amp_env = calc_amp(wav, subsamp=subsamp)
+  return(max(amp_env) / median(amp_env))
+}
+
+
+
 calc_power = function(psd, band=NULL) {
   if (is.null(band)) {
     sqrt(sum(psd[,2]))

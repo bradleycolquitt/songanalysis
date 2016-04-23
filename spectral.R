@@ -18,8 +18,8 @@ library(lubridate)
 #library(smoother)
 registerDoMC(cores=10)
 
-source("/home/brad/src/songanalysis/threshold.r")
-source("/home/brad/src/songanalysis/clustering.R")
+#source("/home/brad/src/songanalysis/threshold.r")
+#source("/home/brad/src/songanalysis/clustering.R")
 
 plot_2dspec = function(wav, peaks=NULL) {
   theme_set(theme_classic())

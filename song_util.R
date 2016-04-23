@@ -19,10 +19,10 @@ library(accelerometry)
 #library(smoother)
 registerDoMC(cores=10)
 
-source("/home/brad/src/songanalysis/threshold.r")
-source("/home/brad/src/songanalysis/clustering.R")
-source("/home/brad/src/songanalysis/song_features.R")
-source("/home/brad/src/songanalysis/spectral.R")
+source("~/src/songanalysis/threshold.r")
+source("~/src/songanalysis/clustering.R")
+source("~/src/songanalysis/song_features.R")
+source("~/src/songanalysis/spectral.R")
 
 plot_2dspec = function(wav, peaks=NULL) {
   theme_set(theme_classic())
@@ -46,6 +46,8 @@ highpass_filter = function(wav, from=1800, wl=1024, ovlp=75, wn="hanning", fftw=
   bit = input$bit
   #rm(input)
   n = nrow(wave)
+  if (n < wl) 
+    return(NULL)
   step = seq(1, n - wl, wl - (ovlp * wl/100))
   z = stft(wave = wave, f = f, wl = wl, zp = 0, step = step, 
             wn = wn, fftw = fftw, complex = TRUE, scale = FALSE)

@@ -1,7 +1,7 @@
 library(mclust)
 library(foreach)
 library(doMC)
-library(kernlab)
+#library(kernlab)
 library(proxy)
 library(cluster)
 #library(sprint)
