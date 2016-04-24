@@ -17,7 +17,7 @@ options(warn=-1)
 suppressMessages(source("~/src/songanalysis/song_util.R"))
 suppressMessages(source("~/src/songanalysis/threshold.r"))
 
-opt = list(dir="/mnt/tutor_home/data/or46pu77/recordings/2016-03-03", cores=8)
+#opt = list(dir="/mnt/tutor_home/data/bk69wh82/recordings/2016-04-23", cores=7)
 #opt = list(dir="/mnt/bengal_home/song/gr44gr48", no_filter_by_size=1, cores=10)
 if(opt$dir == "NA")
   opt$dir = "."
@@ -36,20 +36,38 @@ files = list.files(opt$dir, recursive = F, pattern=".wav", full.names = T)
 #if (length(ind) > 0) files = files[-ind]
 print(paste("Number of files to process: ", length(files), sep=""))
 
+#### Get size info ####
+print("Getting sizes...")
+info = file.info(files)
+info = info[order(-info$size),]
+info$fname = rownames(info)
+#files = rownames(info)
+#sizes = info$size
+
+min_size = 1000
+sized_files = files[sizes>sized_range[1] & sizes<sized_range[2]]
+#print(paste("Number of files with sizes between ", sized_range[1] / 1E6, " and ", sized_range[2] / 1E6, " Mbytes: ", length(sized_files), sep=""))
 #### Calc amp params ####
 print("Finding the silence...")
 #files1 = files[10610:10614]
 #l = profvis({
-res = unlist(lapply(files, function(file) {
+info1 =info[1:10,]
+res = unlist(foreach(row=isplitRows(info, chunkSize=1)) %dopar% {
+#res = unlist(apply(info[,c("info", "size")], 1, function(row) {
   #w = filtersong(readWave(file))
+  file = as.character(row["fname"])
+  size = as.numeric(row["size"])
+  print(file)
+  if (size < min_size)
+    return(TRUE)
+  
   w = highpass_filter(readWave(file), from=500, wl=1024, ovlp=0)
   if (is.null(w))
     return(TRUE)
   rat = calc_max_mean_ratio(w, subsamp=10)
   rat <= 100
-
-}
-))
+})
+#))
 #, mc.cores=opt$cores))
 #})
 res = data.frame(name=files, song=res) 
@@ -59,7 +77,11 @@ silence_dir = paste(opt$dir, "silence", sep="/")
 print(silence_dir)
 dir.create(silence_dir, showWarnings = T)
 to_move = as.character(res[res[,2],1])
-copy_res = file.copy(to_move, paste(silence_dir, basename(to_move), sep="/"))
+if (length(to_move) == nrow(info)) {
+  stop("Error in process.")
+}
+
+copy_res = file.copy(to_move, silence_dir, copy.date=T, overwrite = T)
 
 if (all(copy_res)) {
   file.remove(as.character(to_move))
