@@ -13,8 +13,8 @@ doc <- "Usage: findSubSongs.r [-d directory] [-f no_filter_by_size] [-t date] [-
 
 opt <- docopt(doc)
 
-suppressMessages(source("/home/brad/src/songanalysis/song_util.R"))
-suppressMessages(source("/home/brad/src/songanalysis/song_features.R"))
+suppressMessages(source("~/src/songanalysis/song_util.R"))
+suppressMessages(source("~/src/songanalysis/song_features.R"))
 suppressMessages(library(parallel))
  
 #suppressMessages(library(caret))
@@ -24,7 +24,7 @@ suppressMessages(library(parallel))
 
 #print(opt)
 #print(length(opt$date))
-#opt = list(dir="/mnt/tutor_home/data/rd39pu67/subsongs/", cores=10)
+#opt = list(dir="/mnt/tutor_home/data/bk69wh82/recordings/2016-04-21", cores=4)
 if(opt$dir == "NA")
   opt$dir = "."
 if(length(opt$cores) == 0)
@@ -86,7 +86,7 @@ dir.create(songs_dir, showWarnings = T)
 
 total_songs = 0
 
-#sized_files = sized_files[1:200]
+#sized_files = sized_files[1:10]
 foreach(chunk=isplitVector(sized_files, chunkSize=chunkSize)) %do% {
   cat(paste("chunk ", i , " of ", nchunks, ": ", sep=""))
   i = i +1
@@ -98,10 +98,10 @@ foreach(chunk=isplitVector(sized_files, chunkSize=chunkSize)) %do% {
                                 max_gap = max_gap, 
                                 max_duration = max_duration, 
                                 absolute = F,
-                                thresh_range=seq(-2, 2, .2))
+                                thresh_range=seq(0, 2, .2))
     peaks = peak_info$peaks
     #    print(nrow(peaks))
-    if (nrow(peaks)<=2)
+    if (is.null(peaks) || nrow(peaks)<=2)
       return(FALSE)
     wl = 1024
     frate = wav@samp.rate
@@ -120,7 +120,6 @@ foreach(chunk=isplitVector(sized_files, chunkSize=chunkSize)) %do% {
     peaks = filter_by_gaps(peaks, 0.5)
     if (is.null(peaks))
       return(FALSE)
-    
     num_peaks = nrow(peaks)
     #    print(num_peaks)
     if (num_peaks < min_num_peaks) 
