@@ -78,7 +78,7 @@ max_q95_freq = 8 # kHz
 min_total_duration = 0.5
 max_amp_ratio = .5
 subsamp = 10
-max_mean_gap_durations = 0.4
+max_mean_gap_durations = 0.6
 max_cv_gap_durations = 1
 
 songs_dir = paste(opt$dir, "subsongs", sep="/")
@@ -97,8 +97,8 @@ foreach(chunk=isplitVector(sized_files, chunkSize=chunkSize)) %do% {
                                 min_duration = min_duration, 
                                 max_gap = max_gap, 
                                 max_duration = max_duration, 
-                                absolute = F,
-                                thresh_range=seq(0, 2, .2))
+                                absolute = T,
+                                thresh_range=seq(1, 10, .5))
     peaks = peak_info$peaks
     #    print(nrow(peaks))
     if (is.null(peaks) || nrow(peaks)<=2)
