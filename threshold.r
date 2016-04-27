@@ -388,6 +388,11 @@ mean_sd = function(data, factor = 0) {
   return(mean(data) + sd(data) * factor)
 }
 
+mean_sd2 = function(data, factor = 0) {
+  return(mean(data) * factor)
+}
+
+
 median_sd = function(data, factor = 0) {
   return(median(data) + sd(data) * factor)
 }

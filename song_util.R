@@ -17,7 +17,7 @@ library(matlab)
 library(lubridate)
 library(accelerometry)
 #library(smoother)
-registerDoMC(cores=10)
+registerDoMC(cores=7)
 
 source("~/src/songanalysis/threshold.r")
 source("~/src/songanalysis/clustering.R")
@@ -1078,10 +1078,10 @@ findpeaks_abs_env = function(wav_env, samp_rate, min_duration=50, max_gap=75, ma
 
 findpeaks_range = function(wav, min_duration=50, max_gap=75, max_duration=300, thresh_range=seq(-1,1,.1), absolute=F, subsamp=1, floor=F) {
   if (absolute) {
-    thresh = threshold_auto(wav, mean_sd, log=F, abs=T, factor=thresh_range, floor=floor)
+    thresh = threshold_auto(wav, mean_sd2, log=F, abs=T, factor=thresh_range, floor=floor)
     wav_env = seewave::env(wav, envt = "abs", plot=F)
   } else {
-    thresh = threshold_auto(wav, mean_sd, log=F, abs=F, factor=thresh_range, floor=floor)
+    thresh = threshold_auto(wav, mean_sd2, log=F, abs=F, factor=thresh_range, floor=floor)
     wav_env = as.matrix(wav@left^2)
   }
   #peaks = foreach(th=1:length(thresh_range)) %do% {
@@ -1096,6 +1096,7 @@ findpeaks_range = function(wav, min_duration=50, max_gap=75, max_duration=300, t
   peak_info$num_peak_diff = c(0, diff(peak_info$num_peak))
   
   ind1 = which.max(peak_info$num_peak_diff) 
+  peak_info$num_peak_diff = ifelse(peak_info$num_peak_diff >= -2 & peak_info$num_peak_diff <= 2, 0, peak_info$num_peak_diff )
   diff_rle = rle2(peak_info[ind1:nrow(peak_info),"num_peak_diff"], indices = T)
   ind = diff_rle[which(diff_rle[,1]==0 & diff_rle[,4]>1)[1],2]
   ind = ind + ind1 - 1
