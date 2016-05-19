@@ -17,7 +17,9 @@ plot_feature_vs_time = function(data, value=NULL, reference_date=NULL, ylab=NULL
   
   value_obj = as.symbol(value)
   ref_date = as.symbol(reference_date)
-  m = data %>% group_by(date) %>% summarize(mean=mean(value_obj), sd=sd(value_obj))
+  dots = list(interp(~median(v), v = as.name(value)), 
+              interp(~sd(v), v = as.name(value)))
+  m = data %>% group_by(date) %>% summarize_(.dots=setNames(dots, c("mean", "sd")))
   m$date = paste(m$date, "12:00:00", sep=" ")
   m$date = as.POSIXct(m$date)
   m$rel_date = with(m, as.numeric(difftime(date, as.POSIXct(reference_date), units="days")))
@@ -64,7 +66,8 @@ plot_feature_vs_time_mult = function(data,
                                      xlab=NULL, 
                                      ylim=NULL, 
                                      add_baseline=FALSE, 
-                                     grouping_factor=NULL) {
+                                     grouping_factor=NULL,
+                                     subsample=NULL) {
   
   #value = "tempo"
   #ylab = "Syllables / second"
@@ -73,7 +76,9 @@ plot_feature_vs_time_mult = function(data,
   ref_obj = as.symbol(reference_date)
   group_obj = as.symbol(grouping_factor)
   group_dots = c("date", reference_date, grouping_factor)
-  m = data %>% group_by_(.dots=group_dots) %>% summarize(mean=mean(value_obj), sd=sd(value_obj))
+  sum_dots = list(interp(~mean(v), v = as.name(value)),
+                  interp(~sd(v), v = as.name(value)))
+  m = data %>% group_by_(.dots=group_dots) %>% summarize_(.dots=setNames(sum_dots, c("mean", "sd")))
   m$date = paste(m$date, "12:00:00", sep=" ")
   m$date = as.POSIXct(m$date)
   m = m %>% mutate_(.dots=setNames(list(interp(quote(as.numeric(difftime(date, 
@@ -83,6 +88,10 @@ plot_feature_vs_time_mult = function(data,
                            c("rel_date")))
   
   theme_set(theme_classic())
+  
+  if (!is.null(subsample)) {
+    data = data %>% group_by_(.dots=group_dots) %>% sample_frac(size = subsample) %>% ungroup(.)
+  }
   gg =ggplot(data, aes_string("rel_mtime", value)) + geom_point(alpha=I(1/100)) 
   gg = gg + geom_pointrange(data=m, aes(x=as.numeric(rel_date), y=mean, ymin=(mean-sd), ymax=(mean+sd))) 
   gg = gg + geom_vline(xintercept=0, linetype=2)
