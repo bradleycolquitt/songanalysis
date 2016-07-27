@@ -7,7 +7,7 @@ find_freqband = function(psd, band) {
   #c(ind1, ind2)
 }
 
-######### Sepctral
+######### SPECTRAL ##########
 calc_psd = function(wav, wl=512, subregion=NULL) {
   if (is.null(subregion)) {
     spec(wav, wl=wl, fftw=T, PSD=T, plot=F)
@@ -16,81 +16,10 @@ calc_psd = function(wav, wl=512, subregion=NULL) {
   }
 }
 
-######### Amplitude #########
-calc_amp = function(wav, subsamp=1, band=NULL) {
-  if (is.null(band)) {
-    (wav@left[seq(1,length(wav@left), subsamp)])^2
-  } else {
-    psd = spec(wav, wl=512, fftw=T, PSD=T)
-    calc_power(psd, band)
-  }
-}
 
-calc_max_mean_ratio = function(wav, subsamp=10, band=NULL) {
-  amp_env = calc_amp(wav, subsamp=subsamp)
-  return(max(amp_env) / mean(amp_env))
-}
-
-calc_max_median_ratio = function(wav, subsamp=10, band=NULL) {
-  amp_env = calc_amp(wav, subsamp=subsamp)
-  return(max(amp_env) / median(amp_env))
-}
-
-
-
-calc_power = function(psd, band=NULL) {
-  if (is.null(band)) {
-    sqrt(sum(psd[,2]))
-  } else {
-    sqrt(sum(psd[find_freqband(psd, band),2]))    
-  }
-}
-
-calc_amp_ratio = function(amp, samp.rate, peaks, max_gap=50, subsamp=1, min_num_gaps=5) {
-  
-  if (nrow(peaks) <= 2) 
-    return(1)
-  max_gap = max_gap / 1000
-  
-  gaps = matrix(0, nrow=nrow(peaks) - 1, ncol=2)
-  gaps[,1] = peaks[1:(nrow(peaks) - 1), 2]
-  gaps[,2] = peaks[2:(nrow(peaks)), 1]
-  
-  ind = (gaps[,2] - gaps[,1])<max_gap
-  gaps = matrix(gaps[ind,], ncol=2)
-  
-  if (nrow(gaps)<min_num_gaps) {
-    return(2)
-  } else {
-    peak_ind = sapply(which(ind), function(x) c(x, x+1))
-    peaks = peaks[unique(c(peak_ind)),]
-    peak_amp = mean(apply(peaks, 1, function(x) {
-      d = amp[round((x[1]*samp.rate)/subsamp):(round(x[2]*samp.rate)/subsamp)]
-      mean(d)
-    }))
-    gap_amp = mean(apply(gaps, 1, function(x) {
-      d = amp[(round(x[1]*samp.rate)/subsamp):(round(x[2]*samp.rate)/subsamp)]
-      mean(d)
-    }))
-  }
-  amp_ratio = gap_amp / peak_amp
-}
-
-######### Entropy #########
-calc_entropy = function(x) {
-  y = x[x>0]
-  -1 * sum(y * log2(y))
-}
-
-calc_entropy_psd = function(psd, band=NULL) {
-  if (is.null(band)) {
-    calc_entropy(psd[,2])
-  } else {
-    calc_entropy(psd[find_freqband(psd, band),2])    
-  }
+calc_fm = function(wav, wl=512, subregion=NULL) {
   
 }
-######### Wiener entropy ########
 
 #' stripped down version of seewave::spec
 calc_psd_region = function(wav_matrix, f, wl = 512, wn = "hanning", fftw = TRUE, norm = TRUE, 
@@ -136,6 +65,116 @@ calc_psd_region = function(wav_matrix, f, wl = 512, wn = "hanning", fftw = TRUE,
   return(spec)
   
 }
+
+
+######### AMPLITUDE #########
+calc_amp = function(wav, subsamp=1, band=NULL) {
+  if (is.null(band)) {
+    (wav@left[seq(1,length(wav@left), subsamp)])^2
+  } else {
+    psd = spec(wav, wl=512, fftw=T, PSD=T)
+    calc_power(psd, band)
+  }
+}
+
+calc_amp_subregion = function(wav, subsamp=1, band=NULL, subregion=NULL) {
+  if (is.null(band)) {
+    if (is.null(subregion)) {
+      (wav@left[seq(1,length(wav@left), subsamp)])^2
+    } else {
+      (wav@left[seq(subregion[1] * wav@samp.rate, subregion[2] * wav@samp.rate, subsamp)])^2
+    }
+  } else {
+    if (is.null(subregion)) {
+      psd = spec(wav, wl=512, fftw=T, PSD=T)
+    calc_power(psd, band)
+    } else {
+      psd = spec(wav, wl=512, fftw=T, PSD=T, from=subregion[1], to=subregion[2])
+      calc_power(psd, band)
+    }
+  }
+}
+
+calc_mean_amp = function(wav, subsamp=1, band=NULL, subregion=NULL) {
+  mean(calc_amp_subregion(wav, subsamp, band, subregion))
+}
+
+calc_amp_stats = function(wav, subsamp=1, band=NULL, subregion=NULL) {
+  d = calc_amp_subregion(wav, subsamp, band, subregion)
+  fs = wav@samp.rate
+  
+  time_to_max = which.max(d) / fs
+  return(c(amp_mean = mean(d), 
+           amp_sd = sd(d),
+           amp_cv = sd(d)/mean(d),
+           time_to_max = time_to_max))
+}
+
+calc_max_mean_ratio = function(wav, subsamp=10, band=NULL) {
+  amp_env = calc_amp(wav, subsamp=subsamp)
+  return(max(amp_env) / mean(amp_env))
+}
+
+calc_max_median_ratio = function(wav, subsamp=10, band=NULL) {
+  amp_env = calc_amp(wav, subsamp=subsamp)
+  return(max(amp_env) / median(amp_env))
+}
+
+calc_power = function(psd, band=NULL) {
+  if (is.null(band)) {
+    sqrt(sum(psd[,2]))
+  } else {
+    sqrt(sum(psd[find_freqband(psd, band),2]))    
+  }
+}
+
+calc_amp_ratio = function(amp, samp.rate, peaks, max_gap=50, subsamp=1, min_num_gaps=5) {
+  
+  if (nrow(peaks) <= 2) 
+    return(1)
+  max_gap = max_gap / 1000
+  
+  gaps = matrix(0, nrow=nrow(peaks) - 1, ncol=2)
+  gaps[,1] = peaks[1:(nrow(peaks) - 1), 2]
+  gaps[,2] = peaks[2:(nrow(peaks)), 1]
+  
+  ind = (gaps[,2] - gaps[,1])<max_gap
+  gaps = matrix(gaps[ind,], ncol=2)
+  
+  if (nrow(gaps)<min_num_gaps) {
+    return(2)
+  } else {
+    peak_ind = sapply(which(ind), function(x) c(x, x+1))
+    peaks = peaks[unique(c(peak_ind)),]
+    peak_amp = mean(apply(peaks, 1, function(x) {
+      d = amp[round((x[1]*samp.rate)/subsamp):(round(x[2]*samp.rate)/subsamp)]
+      mean(d)
+    }))
+    gap_amp = mean(apply(gaps, 1, function(x) {
+      d = amp[(round(x[1]*samp.rate)/subsamp):(round(x[2]*samp.rate)/subsamp)]
+      mean(d)
+    }))
+  }
+  amp_ratio = gap_amp / peak_amp
+}
+
+######### ENTROPY #########
+calc_entropy = function(x) {
+  y = x[x>0]
+  -1 * sum(y * log2(y))
+}
+
+calc_entropy_psd = function(psd, band=NULL) {
+  if (is.null(band)) {
+    calc_entropy(psd[,2])
+  } else {
+    calc_entropy(psd[find_freqband(psd, band),2])    
+  }
+  
+}
+######### WIENER ENTROPY ########
+
+
 #' Calculate Wiener entropy of given frequency band in Wave object
 #' @param wav, Wave object
 #' @param band, selected frequency band
@@ -221,10 +260,34 @@ spectral_features_mat = function(wav_matrix, f, wl = 512, band=NULL, subregion=N
   return(res)
 }
 
+######### AGGREGATE ########
+calc_spectral_features_batch = function(info, wl=512, band=NULL, subregion=NULL, overlap=50) {
+  data = foreach(row=isplitRows(info, chunkSize=1)) %dopar% {
+    mat = load_mat(row$mat)
+    mat$wav =row$wav
+    if(nrow(mat) < 10) {
+      return(NULL)
+    }
+    wav = filtersong(readWave(row$wav))
+    d = foreach(syl=isplitRows(mat, chunkSize=1), .combine="rbind") %do% {
+      calc_spectral_features(wav, wl=wl, band=band, subregion=c(as.numeric(syl$onsets), as.numeric(syl$offsets)), overlap=overlap)
+    }
+    data.frame(mat, d)
+  }
+  #data1 = bind_rows(data)
+  return(bind_rows(data))
+}
 calc_spectral_features = function(wav, wl=512, band=NULL, subregion=NULL, overlap=50) {
   window = wl / wav@samp.rate
   fs = wav@samp.rate
-  steps = seq(0, subregion[2]-subregion[1], window * (100-overlap) / 100)
+  
+  steps = NULL
+  if ((subregion[2] - subregion[1]) < window) {
+    steps = c(0)
+  } else {
+    steps = seq(0, (subregion[2]-subregion[1] - window), window * (100-overlap) / 100)
+  }
+  
   wav_duration = length(wav@left) / fs
   subregion2 = subregion
   wav_mat = as.matrix(wav@left)
@@ -232,30 +295,72 @@ calc_spectral_features = function(wav, wl=512, band=NULL, subregion=NULL, overla
   res = sapply(steps, function(step) {
     subregion2[1] = subregion[1] + step
     subregion2[2] = subregion2[1] + window
-    if (subregion2[2] > wav_duration) return(NA)
+    #print(subregion2)
+    if (subregion2[1] <= window |  subregion2[2] >= (wav_duration-window)) return(NA)
     calc_psd_region(wav_mat, f = fs, wl = wl, fftw = T, PSD=T, at = subregion2[1])[,2]
   })
   res = t(na.omit(t(res)))
   if(nrow(res)< (wl / 2)) {
     freq_mean = NA
-    freq_cv = NA
+    freq_mean_cv = NA
+    freq_median = NA
+    freq_median_cv = NA
+    freq_max = NA
+    freq_max_cv = NA
+    
     went_mean = NA
     went_var = NA
+    good_ff = NA
+    goodness = NA
   } else {
     spec = apply(res, 2, function(x) {
-      c(calc_wiener_entropy_psd(cbind(freqs, x), band=band),
-        calc_mean_freq_psd(cbind(freqs, x)))
+      psd = cbind(freqs, x)
+      c(calc_wiener_entropy_psd(psd, band=band),
+        calc_mean_freq_psd(psd),
+        calc_median_freq_psd(psd),
+        calc_max_freq_psd(psd))
       }) 
     went_mean = mean(spec[1,])
     went_var = var(spec[1,])
     
     freq_mean = mean(spec[2,])
-    freq_cv = sd(spec[2,]) / freq_mean
+    freq_mean_cv = sd(spec[2,]) / freq_mean
+    
+    freq_median = mean(spec[3,])
+    freq_median_cv = sd(spec[3,], freq_median)
+    
+    freq_max = mean(spec[4,])
+    freq_max_cv = sd(spec[4,], freq_median)
+    
+    good = calc_goodness(wav, wl=wl, wn="hanning", subregion=subregion, freq_range=c(1, 8))
+    good_ff = good$ff
+    goodness = good$goodness
   }
-  cnames = c("freq_mean", "freq_cv", "went_mean", "went_var")
+  cnames = c("freq_mean", "freq_mean_cv", 
+             "freq_median", "freq_median_cv",
+             "freq_max", "freq_max_cv",
+             "went_mean", "went_var", "good_ff", "goodness")
   data = data.frame(mget(cnames), check.names = F)
   return(data)
 }
+
+calc_amplitude_features_batch = function(info, band=NULL,  subsamp=1) {
+  data = foreach(row=isplitRows(info, chunkSize=1)) %dopar% {
+    mat = load_mat(row$mat)
+    mat$wav =row$wav
+    if(nrow(mat) < 10) {
+      return(NULL)
+    }
+    wav = filtersong(readWave(row$wav))
+    d = foreach(syl=isplitRows(mat, chunkSize=1), .combine="rbind") %do% {
+      calc_amp_stats(wav,  band=band, subregion=c(as.numeric(syl$onsets), as.numeric(syl$offsets)), subsamp=subsamp)
+    }
+    data.frame(mat, d)
+  }
+  #data1 = bind_rows(data)
+  return(bind_rows(data))
+}
+
 
 #' Calculate Weiner entropy and Wiener entropy variance given info file
 #' as returned by load_mat_file
@@ -279,8 +384,7 @@ wiener_stats = function(info, band=c(2000, 10000)) {
   do.call(rbind, d)
 }
 
-######### Frequency #########
-
+######### FREQUENCY #########
 calc_mean_freq = function(wav, wl=512, subregion=NULL, band=NULL) {
   psd = calc_psd(wav, wl=wl, subregion=subregion)
   calc_mean_freq_psd(psd, band=band)
@@ -307,6 +411,15 @@ calc_sd_freq = function(psd, band=NULL, mean_val=NULL) {
   }
 }
 
+calc_max_freq_psd = function(psd) {
+  psd[which.max(psd[,2]),1]
+}
+
+calc_median_freq_psd = function(psd) {
+  cumamp = cumsum(psd[,2])
+  psd[length(cumamp[cumamp <= 0.5]) + 1]
+}
+
 calc_freq_stats = function(wav, q=c(0.5), wl=512, band=NULL, subregion=NULL, overlap=50) {
   ms =  seewave::meanspec(wav, wl = wl, ovlp = overlap, fftw = T, PSD = T, from = subregion[1], to = subregion[2], plot = F)
   c1 = cumsum(ms[,2])
@@ -320,8 +433,7 @@ calc_freq_stats = function(wav, q=c(0.5), wl=512, band=NULL, subregion=NULL, ove
   return(res)
 }
 
-######## Cepstrum ########
-
+######## CEPSTRUM ########
 format_cepstrum = function(data) {
   wav_cep_form = melt(data$amp)
   colnames(wav_cep_form) = c("time", "quef", "amp")
@@ -357,7 +469,7 @@ calc_goodness = function(wav, wl=512, wn="hanning", subregion=NULL, freq_range=c
   cp_max_ind = which.max(cp[,2])
   cp_max_power = cp[cp_max_ind,2]
   cp_max_freq = 1/cp[cp_max_ind,1]
-  return(c(ff=cp_max_freq, goodness=cp_max_power))
+  return(list(ff=cp_max_freq / 1000, goodness=cp_max_power))
 }
 
 calc_cepstrum = function(wav, wl=512, wn="hanning", subregion=NULL) {
@@ -426,4 +538,28 @@ ggplot_cepstrum = function(data) {
   gg = ggplot(data, aes(time, quef, fill=amp)) +  geom_tile() + scale_fill_gradient(limits=limits)
   gg = gg + ylim(0, .7)
   return(gg) 
+}
+
+######## TEMPO ########
+calc_tempo = function(peaks, gap_thresh=.5) {
+  return(nrow(peaks) / (peaks[nrow(peaks),2]-peaks[1,1]))
+}
+
+calc_rolling_tempo = function(peaks, chunk_size=5) {
+  npeaks = nrow(peaks)
+  if (npeaks<5) 
+    return(list(tempo_mean=calc_tempo(peaks), tempo_sd = NA))
+  
+  start = 1
+  stop = chunk_size
+  samples = npeaks - chunk_size + 1
+  tempos = vector(mode="numeric", length = samples )
+  for (i in 1:samples) {
+    tempos[i] = calc_tempo(peaks[start:stop,])
+    start = start + 1
+    stop = stop + 1
+  }
+  
+  return(list(tempo_mean = mean(tempos), tempo_sd = sd(tempos)))
+  
 }

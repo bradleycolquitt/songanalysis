@@ -4,7 +4,7 @@ library(tuneR)
 library(signal)
 library(reshape2)
 library(ggplot2)
-library(doMC)
+library(doMC) 
 library(foreach)
 library(itertools)
 library(R.matlab)
@@ -17,12 +17,12 @@ library(matlab)
 library(lubridate)
 library(accelerometry)
 #library(smoother)
-registerDoMC(cores=7)
+registerDoMC(cores=8)
 
 source("~/src/songanalysis/threshold.r")
 source("~/src/songanalysis/clustering.R")
 source("~/src/songanalysis/song_features.R")
-source("~/src/songanalysis/spectral.R")
+#source("~/src/songanalysis/spectral.R")
 
 plot_2dspec = function(wav, peaks=NULL) {
   theme_set(theme_classic())
@@ -34,6 +34,15 @@ plot_2dspec = function(wav, peaks=NULL) {
   }, 
   xmax=slider(0, length(wav) / wav@samp.rate, initial=length(wav)/wav@samp.rate),
   xmin=slider(0, length(wav) / wav@samp.rate, initial=0))
+}
+
+##### FILE UTIL #####
+parse_timestamp = function(fname, prefix="output_") {
+  times = str_replace(basename(fname), prefix, "")
+  times = str_replace(times, ".wav", "")
+  times = as.numeric(times)
+  times = as.POSIXct(times,  origin="1970-01-01")
+  return(times)
 }
 
 ######## FILTERING/EDITING ########
@@ -60,7 +69,7 @@ highpass_filter = function(wav, from=1800, wl=1024, ovlp=75, wn="hanning", fftw=
   res = istft(z, wl = wl, ovlp = ovlp, wn = wn, output = "Wave", f = f)
   return(res)
 }
-#' High pass filter Wave object at 1800 Hz
+#' High pass filter Wave object
 #' @param wav, the input Wave object
 filtersong = function(wav, band=500, span=50) {
   if (length(band) > 1) {
@@ -118,16 +127,28 @@ chunk_wav = function(wav, chunk_size=2) {
   return(wavs)
 }
 
+remove_peaks_at_edge = function(peaks, fs, wl, wav_duration) {
+  # Filter out peaks on edge of recording
+  buffer = wl / fs
+  
+  ind = peaks[,1]< buffer | peaks[,2] > (wav_duration - buffer)
+  peaks = peaks[!ind,]
+  return(peaks)
+}
+
 ######## PROCESSING ########
 
 parse_song = function(file, 
+                      fast_filter=F,
                       cluster=F, 
                       plot=F, log_transform=F, absolute=F,
                       thresh_method=mean_sd, 
                       thresh_factor=0.5, 
+                      thresh_range=seq(0,10,.25),
                       min_dur=15, 
                       max_gap=10, 
                       max_duration=300,
+                      subsamp=1,
                       include_wavs = TRUE) {
   wav = NULL
   fname = NULL
@@ -143,8 +164,13 @@ parse_song = function(file,
    fname = "dummy"
    fname_base = "dummy"
  }
-  wavf = filtersong(wav)
-  
+  if (fast_filter) {
+    wavf = highpass_filter(wav, from=600, ovlp=50, wl=2048)
+  } else {
+    wavf = filtersong(wav, band=600)
+  }
+
+
   #thresh = threshold_auto(wavf, otsu)
   syls = NULL
   thresh = NULL
@@ -154,13 +180,14 @@ parse_song = function(file,
                                 max_duration = max_duration, 
                                 max_gap = max_gap, 
                                 absolute=absolute,
-                                thresh_range=seq(1,3, .1),
+                                thresh_range=thresh_range,
+                                subsamp=subsamp,
                                 floor=F)
     syls = peak_info$peaks
     thresh = peak_info$thresh
   } else {
     thresh = threshold_auto(wavf, get(thresh_method), log=log_transform, factor=thresh_factor)
-    syls = findpeaks_abs(wavf, min_duration = min_dur, max_duration = max_duration, max_gap = max_gap, thresh=thresh)
+    syls = findpeaks_abs(wavf, min_duration = min_dur, max_duration = max_duration, max_gap = max_gap, thresh=thresh, subsamp=subsamp)
   }
 
   
@@ -173,6 +200,8 @@ parse_song = function(file,
   
   #print(thresh)
   #print(nrow(syls))
+
+  
   if (is.null(syls))  return(list(fname = fname, 
                                   wav=wavf, 
                                   syllable=NULL, 
@@ -196,23 +225,23 @@ parse_song = function(file,
     dur = seewave::duration(wavf)
     if (absolute) {
       env_data = env(wavf, envt="abs", from=0, to=ifelse(dur<4, dur, 4), plot=T)
-
+      
     } else {
+      max_plot = 8
       env_data = wavf@left^2
       xmin = 1
-      xmax = ifelse(dur<4, dur * wavf@samp.rate, 4*wavf@samp.rate) 
+      xmax = ifelse(dur<max_plot, dur * wavf@samp.rate, max_plot*wavf@samp.rate) 
       xind = seq(0, xmax / wavf@samp.rate, 1 / wavf@samp.rate)
       plot(xind, env_data[xmin:(xmax+1)], type="l", 
            ylab="Amplitude power", xlab="seconds",
-           ylim=c(-1E13, 1E14))
-      plot_peaks(syls, col=4, yval = -1E12)
+           ylim=c(-1 * max(env_data)/10, max(env_data)/2))
+      plot_peaks(syls, col=4, yval = -1 * max(env_data) / 20)
     }
-    
-   
     abline(h=thresh, col=2)
-
   }
   
+  
+
   syls$id = paste(fname_base, 1:nrow(syls), sep="-")
   if (include_wavs) {
     song = list(fname = fname, wav=wavf, syllable=syls, motifs=motifs, thresh=thresh, min_dur = min_dur, max_gap = max_gap)
@@ -410,6 +439,7 @@ parse_song_batch = function(input,
                             smoothed=TRUE,
                             threshed=FALSE,
                             weighted=FALSE,
+                            log_transform=FALSE,
                             num_of_songs=NULL, 
                             range_to_test=c(4:9), 
                             distmethod="cor", 
@@ -425,15 +455,22 @@ parse_song_batch = function(input,
     if (!is.null(num_of_songs)) {
       files = files[1:num_of_songs]
     }
+    #lapply(1:length(files), function(i) {
     songd = foreach(i=1:length(files)) %dopar% {
-   # songd = mclapply(1:length(files), function(i) {
+   #songd = mclapply(1:length(files), function(i) {
       file = files[i]
       print(i)
-      song = parse_song(file, cluster = F, plot = F, log_transform = T, thresh_method="range")
+      song = parse_song(file, cluster = F, plot = F, thresh_method="range", )
       if (is.null(song$syllable)) return(list(song=song, syl_data=NULL))
-      syl_data = extract_features2(song, wl=wl, feature_set=feature_set, smoothed=smoothed, threshed=threshed, weighted=weighted)  
+      syl_data = extract_features2(song, 
+                                   wl=wl, 
+                                   feature_set=feature_set, 
+                                   smoothed=smoothed, 
+                                   threshed=threshed, 
+                                   weighted=weighted)  
       return(list(song=song, syl_data=syl_data))
     }
+    #)
     #}, mc.cores=6)  
   
     #return(songd)
@@ -447,7 +484,9 @@ parse_song_batch = function(input,
     # remove non-song/no peak files
     ind = unlist(lapply(songd, function(x) is.null(x$syl_data)))
     songd = songd[!ind]
-    wavs = lapply(songd, function(x) x$song$wav)
+    
+    songs = lapply(songd, function(x) x$song)
+    #wavs = lapply(songd, function(x) x$song$wav)
   
     syl_data = lapply(songd, function(x) x$syl_data)
     syl_data = do.call("rbind", syl_data)
@@ -455,7 +494,7 @@ parse_song_batch = function(input,
     syls = lapply(songd, function(song) song$song$syllable)
     syls = do.call("rbind", syls)
   
-    songd2 = list(wavs=wavs, syl_data=syl_data, syls=syls)
+    songd2 = list(songs=songs, syl_data=syl_data, syls=syls)
     if (return_data) 
       return(songd2)
  
@@ -572,7 +611,7 @@ load_mat_batch = function(info, parse_labels=TRUE) {
   return(mat)
 }
 
-song_to_mat = function(song) {
+song_to_mat = function(song, subdir=NULL) {
   fname = song$fname
   wav = song$wav
  # syls = song$syllable
@@ -589,6 +628,13 @@ song_to_mat = function(song) {
              min.dur=song$min_dur,
              threshold=song$thresh,
              sm.win=2)
+  if (!is.null(subdir)) {
+    file = basename(fname)
+    prefix = str_replace(fname, file, "")
+    prefix = paste(prefix, subdir, sep="/")
+    if (!dir.exists(prefix)) dir.create(prefix)
+    fname = paste(prefix, file, sep="/")
+  }
   out = paste(fname, ".not.mat", sep="")
   write_mat(mat, out)
 }
@@ -646,7 +692,7 @@ extract_features2 = function(song, wl=512, feature_set="mid5_fixed", weighted=FA
                              threshed=FALSE, threshed_val=10,
                              smoothed=TRUE, smoothed_window=4) {
   suppressMessages(require(smoother))
-  feature_sets = c("mid3_fixed", "mid5_fixed", "mid3_rel", "mid5_fixed_5ms", "mid_mean")
+  feature_sets = c("mid3_fixed", "mid5_fixed", "mid3_rel", "mid5_fixed_5ms", "mid_mean", "mid2_mean")
   stopifnot(feature_set %in% feature_sets)
   
   wav = song$wav
@@ -692,7 +738,7 @@ extract_features2 = function(song, wl=512, feature_set="mid5_fixed", weighted=FA
     points[,3] = peaks[,"mids"]
     points[,4] = peaks[,"mids"] + offset
     points[,5] = peaks[,"mids"] + offset * 2 
-  } else if (feature_set == "mid3_rel") {
+  } else if (feature_set %in% c("mid3_rel")) {
     points = matrix(0, nrow=nrow(peaks), ncol=3)  
     points[,1] = peaks[,"ins"] + buffer
     points[,2] = peaks[,"mids"]
@@ -701,10 +747,25 @@ extract_features2 = function(song, wl=512, feature_set="mid5_fixed", weighted=FA
     points = matrix(0, nrow=nrow(peaks), ncol=2)
     points[,1] = peaks[,"ins"] - buffer
     points[,2] = peaks[,"outs"] + buffer
+  } else if (feature_set == "mid2_mean") {
+    points = matrix(0, nrow=nrow(peaks), ncol=4)  
+    points[,1] = peaks[,"ins"] + buffer
+    points[,2] = peaks[,"mids"]
+    points[,3] = peaks[,"mids"]
+    points[,4] = peaks[,"outs"] - buffer
+    ind = which((points[,2] - points[,1]) < (res))
+    points[ind,2] = points[ind,1] + (res)
+    ind = which((points[,4] - points[,3]) < (res))
+    points[ind,3] = points[ind,4] - (res)
   }
   dur = seewave::duration(wav)
   
   # Filter out peaks on edge of recording
+  if (feature_set == "mid2_mean") {
+    ind = points[,2] > (dur - (2*buffer))  | points[,3] < (2*buffer)
+    points = points[!ind,]
+    peaks = peaks[!ind,]
+  }
   ind = points[,1]<(2*buffer) | points[,ncol(points)] > (dur- (2*buffer))
   points = points[!ind,]
   peaks = peaks[!ind,]
@@ -717,28 +778,25 @@ extract_features2 = function(song, wl=512, feature_set="mid5_fixed", weighted=FA
 
   psd1 = NULL
   data = NULL
-    data = foreach(row=isplitRows(points, chunkSize=1), .inorder = T, .combine="rbind") %do% {
-    #tomid = row[1,"mids"] - row[1,"ins"]
+  data = foreach(row=isplitRows(points, chunkSize=1), .inorder = T, .combine="rbind") %do% {
+   
+    d = NULL
+    psd1 = NULL
+    if (feature_set %in% c("mid_mean")) {
+      psd1 = seewave::meanspec(wav, wl=wl, fftw=T, PSD=T, norm=T, plot=F, from=row[1], to=row[2])[ind_range,"y"]
+    } else if (feature_set == "mid2_mean") {
+      p1 = seewave::meanspec(wav, wl=wl, fftw=T, PSD=T, norm=T, plot=F, from=row[1], to=row[2])[ind_range,"y"]
+      p2 = seewave::meanspec(wav, wl=wl, fftw=T, PSD=T, norm=T, plot=F, from=row[3], to=row[4])[ind_range,"y"]
+      #p1 = 0
+      psd1 = c(p1, p2)
+    } else {
+      psd1 = foreach(x= isplitCols(row, chunkSize=1), .combine="c") %do% {
+        d = seewave::spec(wav, wl=wl, fftw=T, PSD=T, norm=T,  plot=F, at=x)[ind_range,"y"]
+        if (weighted) d = d * weights
+        d
+      }
+    } 
     
-    #if (tomid < res) {
-    #  psd1 = c(meanspec(wav, wl=512, fftw=T, PSD=T, norm = F, plot=F,  at=as.numeric(row["in"]))[ind_range,"y"],
-    #           meanspec(wav, wl=512, fftw=T, PSD=T, norm = F, plot=F,  at=as.numeric(row["mids"]))[ind_range,"y"])
-               #meanspec(wav, wl=512, fftw=T, PSD=T, norm = F, plot=F,  at=as.numeric(row["outs"]))[ind_range,"y"])
-    #} else {
-     # psd1 = c(meanspec(wav, wl=512, fftw=T, PSD=T, norm=F,  plot=F, from=as.numeric(row["ins"]), to=as.numeric(row["mids"]))[ind_range,"y"],
-    #         meanspec(wav, wl=512, fftw=T, PSD=T, norm=F, plot=F, from=as.numeric(row["mids"]), to=as.numeric(row["outs"]))[ind_range,"y"])
-      d = NULL
-      psd1 = NULL
-      if (feature_set %in% c("mid_mean")) {
-        psd1 = seewave::meanspec(wav, wl=wl, fftw=T, PSD=F, norm=F, plot=F, from=row[1], to=row[2])[ind_range,"y"]
-      } else {
-        psd1 = foreach(x= isplitCols(row, chunkSize=1), .combine="c") %do% {
-          d = seewave::spec(wav, wl=wl, fftw=T, PSD=F, norm=F,  plot=F, at=x)[ind_range,"y"]
-          if (weighted) d = d * weights
-          d
-        }
-      } 
-  
     if (threshed) {
       psd1 = psd1 - song$thresh * threshed_val
       psd1[psd1 < 1] = 1
@@ -778,7 +836,7 @@ extract_features_syl = function(wav, mat, subsamp=1, wl=1024) {
   if (nrow(peaks) < 2)
     return(list(syls=NULL, 
                 gaps=NULL))
-
+  
   durations = peaks[,2] - peaks[,1]
   # Gap durations
   gap_durations = vector("numeric", length = nrow(peaks) - 1)
@@ -798,9 +856,9 @@ extract_features_syl = function(wav, mat, subsamp=1, wl=1024) {
     
     spec_feat = calc_spectral_features(wav, wl=wl, subregion=c(as.numeric(.[1]), as.numeric(.[2])), overlap=0)
     data.frame(mean_syl_amp=mean(amps),
-      sd_syl_amp=sd(amps),
-      time_to_max = time_to_max,
-      spec_feat
+               sd_syl_amp=sd(amps),
+               time_to_max = time_to_max,
+               spec_feat
     )
   })
   
@@ -930,15 +988,19 @@ plot_classified_syllable = function(song, label_name="called", num_syls=5) {
 
 plot_spectro = function(wav, subregion=NULL, wl=512, overlap=50, labels=NULL, label_name = "called") {
   require(matlab)
+  options(stringsAsFactors=T) # kludge to get stat_contour to work
   spectrogram = spectro(wav, plot = FALSE, tlim=subregion, fftw=T)
   frequency = rep(spectrogram$freq, times = ncol(spectrogram$amp))
   time = rep(spectrogram$time, each = nrow(spectrogram$amp))
   amplitude = as.vector(spectrogram$amp)
   df = data.frame(time, frequency, amplitude)
+  #df = df %>% mutate(density = MASS::kde2d(time, frequency))
   gg = ggplot(df, aes_string(x = "time", 
                             y = "frequency",
                             z = "amplitude"))
   gg = gg + stat_contour(aes(fill=..level..), geom="polygon", binwidth=1)
+ # gg = gg + geom_raster( interpolate=T)
+  #gg = gg + stat_density(aes(fill = ..density..), geom = "raster", position = "identity")
   gg = gg + scale_fill_gradientn("Amplitude, (db)",
                                  colours=jet.colors(7), 
                                  breaks=c(-40, -15, 0),
@@ -947,7 +1009,7 @@ plot_spectro = function(wav, subregion=NULL, wl=512, overlap=50, labels=NULL, la
   gg = gg + labs(x="Time", y="Frequency") + ylim(0,10) + xlim(subregion)
   
   if (!is.null(labels)) {
-    labels$time = (labels$outs + labels$ins) / 2
+    labels$time = (labels[,2] + labels[,1]) / 2
     labels = cbind(labels, data.frame(frequency=0, amplitude=0))
     gg = gg + geom_text(data=labels, aes_string(label=label_name))
   }
@@ -1096,10 +1158,13 @@ findpeaks_range = function(wav, min_duration=50, max_gap=75, max_duration=300, t
   peak_info$num_peak_diff = c(0, diff(peak_info$num_peak))
   
   ind1 = which.max(peak_info$num_peak_diff) 
-  peak_info$num_peak_diff = ifelse(peak_info$num_peak_diff >= -2 & peak_info$num_peak_diff <= 2, 0, peak_info$num_peak_diff )
+  flat_value = median(peak_info$num_peak) / 20
+  peak_info$num_peak_diff = ifelse(abs(peak_info$num_peak_diff) <= flat_value, 0, peak_info$num_peak_diff )
   diff_rle = rle2(peak_info[ind1:nrow(peak_info),"num_peak_diff"], indices = T)
-  ind = diff_rle[which(diff_rle[,1]==0 & diff_rle[,4]>1)[1],2]
-  ind = ind + ind1 - 1
+  
+  plateau = round((1 / diff(thresh_range)[1]) / 2)
+  ind = diff_rle[which(diff_rle[,1]==0 & diff_rle[,4] > plateau)[1],2]
+  ind = ind + plateau + ind1 - 1
   #ind = which.max(peak_info$num_peak_diff) + 2
   ind = ifelse(ind > length(peaks), length(peaks), ind)
   #print(peak_info$thresh_factor[ind])
@@ -1109,7 +1174,8 @@ findpeaks_range = function(wav, min_duration=50, max_gap=75, max_duration=300, t
 
 
 #' Find frequency peaks in PSD
-#' @param wav, the input Wave object
+#' @param mat, the input PSD matrix, col1 is frequncy, col2 is power
+#' @param min_value, minimum frequency value, in kHz
 #' @param min_size, minimum band size of peak
 #' @param max_gap, maximum distance (in kHz) between peaks before merging
 #' @param thresh, threshold for peak definition, defined as fraction of max amplitude
@@ -1274,9 +1340,24 @@ songfinder2 = function(wav,
                               max_duration = max_duration, 
                               max_gap = max_gap, 
                               absolute = F, 
-                              thresh_range=seq(-.5, .1, .1),
+                              thresh_range=seq(0, 5, .2),
                               subsamp=subsamp)
+  
+  # peak_info = findpeaks_range(wavf, 
+  #                             min_duration = min_dur, 
+  #                             max_duration = max_duration, 
+  #                             max_gap = max_gap, 
+  #                             absolute=absolute,
+  #                             thresh_range=thresh_range,
+  #                             subsamp=subsamp,
+  #                             floor=F)
+ # syls = peak_info$peaks
   peaks = peak_info$peaks
+  thresh = peak_info$thresh
+  
+  if (is.null(peaks))
+    return(FALSE)
+
   num_peaks = nrow(peaks)
   thresh = peak_info$thresh
   if (num_peaks < min_num_peaks) return(FALSE)
@@ -1292,7 +1373,7 @@ songfinder2 = function(wav,
   cv_peak_dist = sd(peak_dists) / mean(peak_dists)
   res = (total_duration > 0.5) & 
         (amp_ratio < .4) & (amp_ratio > 0) &
-        (cv_peak_dist < 1.5) & (cv_peak_dist > 0)
+        (cv_peak_dist < 1.2) & (cv_peak_dist > 0)
         
       #  (num_peaks >= min_num_peaks)
    # (rate > min_num_peaks ) & 
@@ -1787,166 +1868,6 @@ songfinder_psd = function(psd,
   wein = weiner_entropy_psd(psd, region=band)
   return(wein<wein_thresh)
 }
-
-
-
-######## Fundamental frequency ########
-calc_ff = function(wav, peaks) {
-  
-  psd = apply(peaks, 1, function(x) spec(wav, wl = 512, PSD=T, from=x[1], to=x[2], plot=F))
-  psd_peaks = lapply(psd, function(data) {
-    total_power = sum(data[,2])
-    d = findpeaks_freq(data, min_size=0)
-    d %>% rowwise() %>% summarize(ins=ins, 
-                                  outs=outs, 
-                                  prop=sum(data[data[,1]>ins & data[,1]<outs,2])/total_power)
-  })
-  return(psd_peaks)
-}
-
-calc_ff = function(wav, mat) {
-  
-  #psd = apply(mat, 1, function(x) spec(wav, PSD=T, from=as.numeric(x["onsets"]), to=as.numeric(x["offsets"]), plot=F))
-  #if (class(psd) == "matrix") psd = list(cbind(1:nrow(psd), psd))
-  freqs = unlist(lapply(psd, function(data) {
-    d = findpeaks_freq(data, min_value=2, max_gap=1000, min_size=0, thresh=.1)
-    maxes = apply(d, 1, function(x) max(psd[x[1]:x[2]]))
-    d = d[which.max(maxes),]
-    #d_mean = apply(d, 1, mean)
-    #d_mean = data.frame(ind=1:length(d_mean), d_mean=d_mean)
-    #d_freq = apply(d_mean, 1, function(x) x[2]/x[1])
-    #mean(d_freq)
-  }))
-  
-  #if (nrow(mat) == 1) {
-  #  return(c(mat, freqs))
-  #} else {
-  return(cbind(mat, freqs))
-  #}
-}
-
-#' Calculate fundamental frequency by averaging harmonics
-#' @param wav, input Wave file
-#' @param mat, data.frame containing onsets, offsets, and label as generated by load_mat
-#' @return mat file supplemented with calculated fundamental frequency
-calc_ff2 = function(wav, mat) {
-  
-  psd = apply(mat, 1, function(x) spec(wav, PSD=T, from=as.numeric(x["onsets"]), to=as.numeric(x["offsets"]), plot=F))
-  if (class(psd) == "matrix") psd = list(cbind(1:nrow(psd), psd))
-  freqs = unlist(lapply(psd, function(data) {
-    
-    d = findpeaks_freq(data, min_value=2, max_gap=1000, min_size=0, thresh=.1)
-    d_mean = apply(d, 1, mean)
-    d_mean = data.frame(ind=1:length(d_mean), d_mean=d_mean)
-    d_freq = apply(d_mean, 1, function(x) x[2]/x[1])
-    mean(d_freq)
-  }))
-  
-  return(cbind(mat, freqs))
-
-}
-
-calc_ff2_batch = function(info, label="a") {
-  d = foreach(row=isplitRows(info, chunkSize=1), .combine="rbind" ) %dopar% {
-    wav = readWave(row[1, "wav"])
-    wavf = filtersong(wav)
-    mat = load_mat(row[1, "mat"])
-    
-    mat = mat %>% filter(labels==label)
-    if (nrow(mat) > 0) {
-      return(cbind(calc_ff2(wavf, mat), mat = row[1,"mat"]))
-    } else {
-      return(NULL)
-    }
-  }
-  d
-}
-calc_freq_rolling_batch = function(info, label="a", offset=8) {
-  d = foreach(row=isplitRows(info, chunkSize=1), .combine="rbind" ) %dopar% {
-    print(row[1,"wav"])
-    wav = readWave(row[1, "wav"])
-    wavf = filtersong(wav)
-    mat = load_mat(row[1, "mat"])
-    
-    
-    mat = mat %>% filter(labels==label)
-    #mat = mat[mat$offsets - mat$onsets]
-    if (nrow(mat) > 0) {
-      res = mat %>% rowwise() %>% do({calc_freq_rolling(wavf, offset=offset, subregion=unlist(.[1:2]))})
-      return(cbind(mat, res, mat = row[1,"mat"]))
-    } else {
-      return(NULL)
-    }
-  }
-  d
-}
-calc_freq_rolling = function(wav, offset=4, step = 4, duration = 8, subregion=NULL, fraction_max=.05) {
-  wl = 512
-  res = 512 / wav@samp.rate
-  offset = offset / 1000
-  null_df = data.frame(freq = NA)
-  if (!is.null(subregion)) {
-    from = subregion[1] + offset
-    to = subregion[2] - offset
-    if ((to - from) < res ) return(null_df)
-    psd = spectro(wav, wl=512, norm=F, fftw = T, dB = NULL, plot=F, PSD=T, tlim=c(from, to), ovlp=50)
-  } else {
-    stop("Please specify subregion!")
-  }
-  
-  max_overall = max(psd[[3]])
-  
-  peaks = apply(psd[[3]], 2, function(x) {
-    f = findpeaks_freq(cbind(psd[[2]], x), 
-                       min_value=2, 
-                       max_gap=1, 
-                       min_size=0, 
-                       thresh=max_overall*fraction_max, 
-                       absolute=T)
-    if (nrow(f)==0) return(NA)
-  
-    power = apply(f, 1, function(peak) {
-      inds = c(which(psd[[2]]==peak[1]), which(psd[[2]]==peak[2])) # select frequency corresponding to power peak
-      mean(x[inds])
-    })
-    
-    fmean = cbind(freq = rowMeans(f), power) 
-    return(fmean[which.min(fmean[,1]),])
-    })
-  
-  if (length(na.omit(peaks)) == 0) return(null_df)
-  if (class(peaks) == "list") {
-    peaks = na.omit(do.call(rbind, peaks))
-  } else {
-    peaks = t(peaks)
-    #print("here")
-  }
-  total_power = sum(peaks[,"power"])
-  return( data.frame(freq = as.numeric(t(peaks[,"freq"]) %*% peaks[,"power"] / total_power )))
-}
-
-calc_freq = function(wav, offset=10, duration=8, band=NULL, subregion=NULL) {
-  psd = NULL
-  if (!is.null(subregion)) {
-    from = subregion[1] + offset
-    to = from + duration
-    psd = spec(wav, wl=512, norm=F, plot=F, PSD=T, from=(from / 1000), to=(to / 1000))
-  } else {
-    stop("Please specify subregion!")
-  }
- 
-  psd[,1] = 1000 * psd[,1] # convert to Hertz from kHertz
-  if (is.null(band)) band = c(1, nrow(psd))
-  psd1 = psd[psd[,1]>band[1] & psd[,1]<band[2],]
-  colnames(psd1) = c("freq", "power")
-  psd1 = as.data.frame(psd1)
-  psd1$onsets = subregion[1]
-  psd1$offsets = subregion[2]
-  #return(as.data.frame(psd1))
-  return(psd1[which.max(psd1[,2]),1])
-}
-
-
 
 compute_class = function(res, trues) {
   tp = vector("numeric", 4)

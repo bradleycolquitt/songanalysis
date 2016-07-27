@@ -24,7 +24,7 @@ suppressMessages(library(parallel))
 
 #print(opt)
 #print(length(opt$date))
-#opt = list(dir="/mnt/tutor_home/data/bk69wh82/recordings/2016-04-21", cores=4)
+#opt = list(dir="/mnt/osprey/tutor/bk84wh88/recordings/2016-05-02", cores=10)
 if(opt$dir == "NA")
   opt$dir = "."
 if(length(opt$cores) == 0)
@@ -39,7 +39,7 @@ doMC::registerDoMC(cores=opt$cores)
 
 print("Getting file list...")
 files = list.files(opt$dir, recursive = T, pattern=".wav", full.names = T)
-ind = grep("songs|sized", files)
+ind = grep("songs|sized|silence", files)
 if (length(ind) > 0) files = files[-ind]
 dirs = unique(unlist(lapply(str_split(files, "/"), function(x) x[1])))
 print(dirs)
@@ -56,7 +56,7 @@ if (!opt$no_filter_by_size) {
   files = rownames(info)
   sizes = info$size
   
-  sized_range = c(3E5, 2E6)
+  sized_range = c(3E5, 4E6)
   sized_files = files[sizes>sized_range[1] & sizes<sized_range[2]]
   print(paste("Number of files with sizes between ", sized_range[1] / 1E6, " and ", sized_range[2] / 1E6, " Mbytes: ", length(sized_files), sep=""))
 } else {
@@ -74,19 +74,23 @@ max_duration = 500
 max_gap = 10
 min_num_peaks = 5
 min_mean_freq = 1.5 # kHz
+max_mean_freq = 6 
 max_q95_freq = 8 # kHz
 min_total_duration = 0.5
 max_amp_ratio = .5
 subsamp = 10
-max_mean_gap_durations = 0.6
-max_cv_gap_durations = 1
+max_mean_gap_durations = 0.4
+max_cv_gap_durations = 1.5
+max_tempo = 10
+min_tempo = 2
+
 
 songs_dir = paste(opt$dir, "subsongs", sep="/")
 dir.create(songs_dir, showWarnings = T)
 
 total_songs = 0
 
-#sized_files = sized_files[1:10]
+#sized_files = sized_files[1:1000]
 foreach(chunk=isplitVector(sized_files, chunkSize=chunkSize)) %do% {
   cat(paste("chunk ", i , " of ", nchunks, ": ", sep=""))
   i = i +1
@@ -97,45 +101,55 @@ foreach(chunk=isplitVector(sized_files, chunkSize=chunkSize)) %do% {
                                 min_duration = min_duration, 
                                 max_gap = max_gap, 
                                 max_duration = max_duration, 
-                                absolute = T,
-                                thresh_range=seq(1, 10, .5))
+                                absolute = F,
+                                thresh_range=seq(1, 10, .25))
     peaks = peak_info$peaks
     #    print(nrow(peaks))
     if (is.null(peaks) || nrow(peaks)<=2)
-      return(FALSE)
+      return("no peaks")
     wl = 1024
     frate = wav@samp.rate
     window = wl / frate
     peaks = peaks %>% dplyr::filter(ins>window, outs<(seewave::duration(wav)-window))
-    #    print(nrow(peaks))
     if (nrow(peaks)<=2)
       return(FALSE)
-    pdists = peak_dist(peaks)
-    if(mean(pdists) > max_mean_gap_durations)
-      return(FALSE)
-    if (sd(pdists)/mean(pdists) > max_cv_gap_durations)
-      return(FALSE)
+    #    print(nrow(peaks))
     
     ### Filter large gaps
-    peaks = filter_by_gaps(peaks, 0.5)
-    if (is.null(peaks))
-      return(FALSE)
+   # peaks = filter_by_gaps(peaks, 0.5)
+  #  if (is.null(peaks))
+  #    return(FALSE)
+    
+
+
+    pdists = peak_dist(peaks)
+    pdists = pdists[pdists<.5]
+    if (length(pdists) < (min_num_peaks)-1)
+      return("too_long_gaps")
+    if(mean(pdists) > max_mean_gap_durations)
+      return("max_mean_gap_durations")
+    if (sd(pdists)/mean(pdists) > max_cv_gap_durations)
+      return("max_cv_gap_durations")
+    
     num_peaks = nrow(peaks)
+    tempo = num_peaks / (peaks[nrow(peaks),2]-peaks[1,1])
+    if (tempo < min_tempo | tempo > max_tempo)
+      return("tempo")
     #    print(num_peaks)
     if (num_peaks < min_num_peaks) 
-      return(FALSE)
+      return("peaks")
     
     total_duration = peaks[num_peaks,2] - peaks[1,1]
     #  print(total_duration)
     if (total_duration < min_total_duration) 
-      return(FALSE)
+      return("total_duration")
     
     #pdists = peak_dist(peaks)
     #if (sd(pdists) / )
     amp = abs(wavf@left[seq(1,length(wavf@left), subsamp)])
     amp_ratio = calc_amp_ratio(amp, frate, peaks, max_gap=500, subsamp=subsamp)
     if (amp_ratio>max_amp_ratio) 
-      return(FALSE)
+      return("amp_ratio")
     
     syl_ents = apply(peaks[,1:2], 1, function(peak) {
       #calc_freq_stats(wavf, q =c(.5,.95), subregion = c(peak[1], peak[2]), wl=256, overlap=0 )
@@ -148,9 +162,10 @@ foreach(chunk=isplitVector(sized_files, chunkSize=chunkSize)) %do% {
     #freq_stats = apply(syl_ents, 1, mean, na.rm=T)
     #if ((freq_stats[1]<min_mean_freq) || (freq_stats[2]>max_q95_freq))
     if (mean_freq < min_mean_freq)
-      return(FALSE)
-    
-    return(TRUE)
+      return("min_mean_freq")
+    if (mean_freq > max_mean_freq)
+      return("max_mean_freq")
+    return("good")
   }
     
   res = data.frame(fname=chunk, isSong=unlist(res))
@@ -159,16 +174,19 @@ foreach(chunk=isplitVector(sized_files, chunkSize=chunkSize)) %do% {
     #stop()
   }
   #print(summary(res[,2]))
-  print(paste("Number of identified songs: ", nrow(res[res[,2],]), sep=""))
-  total_songs = total_songs + sum(res[,2])
+  print(paste("Number of identified songs: ", nrow(res[res[,2]=="good",]), sep=""))
+  total_songs = total_songs + sum(res[,2]=="good")
   
-  file.copy(as.character(res[res[,2],1]), songs_dir, copy.date=T, overwrite=F)
+  file.copy(as.character(res[res[,2]=="good",1]), songs_dir, copy.date=T, overwrite=F)
   
   if (length(opt$nsongs) > 0) {
     nsongs_dir = paste(opt$dir, "not_subsongs", sep="/")
     dir.create(nsongs_dir, showWarnings = F)
-    file.copy(as.character(res[!res[,2],1]), nsongs_dir, copy.date=T, overwrite=F)}
+    file.copy(as.character(res[res[,2]!="good",1]), nsongs_dir, copy.date=T, overwrite=F)}
   
+  res = res[order(res[,1]),]
+  write.table(res, file=paste(songs_dir, paste("analysis", Sys.Date(), sep="_"), sep="/"), append = T, quote=F, sep="\t", row.names=F)
+
 }
 print(paste("Total songs: ", total_songs, " of ", length(sized_files), sep=""))
 
