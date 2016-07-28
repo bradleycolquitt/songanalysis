@@ -1366,14 +1366,15 @@ songfinder2 = function(wav,
   amp = abs(wavf@left[seq(1,length(wavf@left), subsamp)])
   amp_ratio = calc_amp_ratio(amp, wavf@samp.rate, peaks, max_gap=amp_ratio_max_gap, subsamp=subsamp)
   
-  #rate = num_peaks / (peaks[num_peaks,2] - peaks[1,1])
+  rate = num_peaks / (peaks[num_peaks,2] - peaks[1,1])
   total_duration = peaks[num_peaks,2] - peaks[1,1]
   peak_dists = peak_dist(peaks)
   peak_dists = peak_dists[peak_dists<0.5]
   cv_peak_dist = sd(peak_dists) / mean(peak_dists)
   res = (total_duration > 0.5) & 
-        (amp_ratio < .4) & (amp_ratio > 0) &
-        (cv_peak_dist < 1.2) & (cv_peak_dist > 0)
+        (amp_ratio < .2) & (amp_ratio > 0) &
+        (rate > 5) & (rate < 12)
+        #(cv_peak_dist < 1.1) & (cv_peak_dist > 0)
         
       #  (num_peaks >= min_num_peaks)
    # (rate > min_num_peaks ) & 

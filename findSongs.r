@@ -18,10 +18,10 @@ doc <- "Usage: findSongs.r [-d directory] [-f no_filter_by_size] [-t date] [-m t
 opt <- docopt(doc)
 
 options(warn=-1)
-suppressMessages(source("/home/brad/src/songanalysis/song_util.R"))
-suppressMessages(source("/home/brad/src/songanalysis/threshold.r"))
+suppressMessages(source("~/src/songanalysis/song_util.R"))
+suppressMessages(source("~/src/songanalysis/threshold.r"))
 
-#opt = list(dir="/mnt/bengal_home/song/wh97pk92/2016-06-20", cores=10, time="9:55:00")
+opt = list(dir="/mnt/bengal_home/song/bk47/2016-07-25", cores=10)
 #opt = list(dir="/mnt/bengal_home/song/gr44gr48", no_filter_by_size=1, cores=10)
 
 if (length(opt$date) == 0 & length(opt$time) > 0)
@@ -74,6 +74,7 @@ if (!opt$no_filter_by_size) {
 }
 #### Find songs ####
 print("Finding songs...")
+sized_files = sized_files[1:10]
 res = unlist(mclapply(sized_files, function(file) {
   w = readWave(file)
   songfinder2(w, min_duration = 15, max_gap = 10, max_duration=200,
