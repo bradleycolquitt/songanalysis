@@ -1,0 +1,272 @@
+---
+title: "test_findSongs"
+output: html_document
+---
+
+```{r}
+source("~/src/songanalysis/song_util.R")
+```
+
+```{r}
+options(stringsAsFactors = F)
+```
+
+```{r}
+manual = read.delim("/mnt/bengal_home/song/test/manual.txt", sep=" ", header=F)
+manual = manual[grep("wav", manual[,1]),]
+manual[,2][!grepl("song", manual[,2])] = "not_song"
+manual[,1] = paste("/mnt/bengal_home/song", manual[,1], sep="/")
+colnames(manual) = c("fname", "class")
+```
+
+```{r}
+info = file.info(manual[,1])
+info$fname = rownames(info)
+manual = merge(manual, info)
+```
+
+```{r}
+manual = manual[manual$size >= 500000,]
+```
+
+```{r}
+manual1 = manual[manual$class=="song",]
+```
+
+
+```{r}
+min_duration = 15
+max_duration = 200
+max_gap = 10
+min_num_peaks = 5
+max_gap_amp_ratio = 120
+min_num_gaps = 5
+subsamp = 10
+```
+
+```{r}
+train_size = round(nrow(manual) * .5)
+manual2 = manual[sample(1:nrow(manual), train_size),]
+wavs = mclapply(manual2$fname, readWave, mc.cores=10)
+```
+```{r}
+i = 1
+#for (wav in wavs[161:162]) {
+d = foreach(wav=wavs, .combine="rbind") %dopar% {
+  print(i)
+  i = i + 1
+  wl=1024
+  wavf = highpass_filter(wav, from = 500, wl = 1024, ovlp = 25)
+  amp = abs(wavf@left[seq(1,length(wavf@left), subsamp)])
+  peak_info = findpeaks_range(wavf, min_duration = min_duration, 
+                              max_duration = max_duration, 
+                              max_gap = max_gap, 
+                              absolute = F, 
+                              thresh_range=seq(-.5, .1, .1),
+                              subsamp=subsamp)
+  peaks = peak_info$peaks
+  fs = wav@samp.rate
+  window = wl / fs
+  peaks = peaks %>% filter(ins>window, outs<(seewave::duration(wav)-window))
+  if (nrow(peaks) < min_num_peaks) 
+        return(data.frame(amp_ratio=0, 
+                                          rate=0, 
+                                          total_duration=0, 
+                                          thresh_factor = -2, 
+                                          thresh = 0, 
+                                          mean_amp = 0,  
+                                          mean_peak_dists=0, 
+                                          cv_peak_dists=0, num_peaks = 0,
+                                          mean_syl_went = 0,
+                                          sd_syl_went=0,
+                                          mean_syl_wev=0,
+                                          sd_syl_wev=0))
+    #next
+  
+  ## Spectral calcs
+  syl_spec = apply(peaks[,1:2], 1, function(peak) {
+     calc_spectral_features(wav, wl=wl, subregion=c(as.numeric(peak[1]), as.numeric(peak[2])), overlap=0)
+  })
+  syl_spec = do.call(rbind, syl_spec)
+  mean_syl_went = mean(syl_spec[,3], na.rm=T)
+  sd_syl_went = sd(syl_spec[,3], na.rm=T)
+  mean_syl_wev = mean(syl_spec[,4], na.rm=T)
+  sd_syl_wev = sd(syl_spec[,4], na.rm=T)
+  
+  thresh_factor = peak_info$thresh_factor
+  thresh = peak_info$thresh
+  peak_dists = peak_dist(peaks)
+  # Filter for poor amplitude definition of peaks
+  amp_ratio = compute_amp_ratio(amp, wavf@samp.rate, peaks, max_gap=max_gap_amp_ratio, subsamp=subsamp, min_num_gaps = min_num_gaps)
+  rate = nrow(peaks) / (peaks[nrow(peaks),2] - peaks[1,1])
+  total_duration = peaks[nrow(peaks),2] - peaks[1,1]
+  data.frame(amp_ratio=amp_ratio, 
+             rate=rate, 
+             total_duration=total_duration, 
+             thresh_factor = thresh_factor, 
+             thresh=thresh, 
+             mean_amp = mean(amp), 
+             mean_peak_dists = mean(peak_dists), 
+             cv_peak_dists = sd(peak_dists)/ mean(peak_dists), 
+             num_peaks = nrow(peaks),
+             mean_syl_went = mean_syl_went,
+             sd_syl_went = sd_syl_went,
+             mean_syl_wev = mean_syl_wev,
+             sd_syl_wev = sd_syl_wev)
+}
+d = cbind(d, manual2)
+```
+
+```{r}
+d[is.nan(d[,1]),1] = 0
+d[is.na(d)] = 0
+```
+
+```{r}
+ggplot(d, aes(amp_ratio, total_duration, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d, aes(amp_ratio, rate, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d, aes(total_duration, rate, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d, aes(total_duration, log10(thresh), color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d, aes(total_duration, size, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d, aes(total_duration, log10(mean_amp), color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d, aes(amp_ratio, mean_peak_dists, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d, aes(amp_ratio, num_peaks, color=class)) + geom_point() + geom_hline(yintercept=5)
+```
+
+```{r}
+ggplot(d, aes(size, num_peaks, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d, aes(amp_ratio, mean_syl_went, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d, aes(amp_ratio, mean_syl_wev, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d, aes(cv_peak_dists, amp_ratio, color=class)) + geom_point()
+```
+
+```{r}
+library(randomForest)
+data_class = unlist(sapply(d, class))
+rf = randomForest(d[,data_class=="numeric"], y = factor(d$class))
+```
+
+```{r}
+rf
+varImpPlot(rf)
+```
+
+Filter on total_duration, num_peaks, amp_ratio, mean_amp, size, thresh, mean_syl_went
+
+```{r}
+ggplot(d, aes(mean_syl_went, color=class)) + geom_density() 
+```
+
+```{r}
+ggplot(d, aes(log10(thresh), color=class)) + geom_density() 
+```
+
+```{r}
+ggplot(d, aes(cv_peak_dists, color=class)) + geom_density() 
+```
+
+
+```{r}
+ggplot(d, aes(num_peaks, color=class)) + geom_density(adjust=1/5) 
+```
+
+
+```{r}
+ggplot(d %>% filter(grepl("2015-10-30", fname)), aes(amp_ratio, color=class)) + geom_density(adjust=1/5) 
+```
+
+```{r}
+ggplot(d %>% filter(grepl("2015-10-30", fname)), aes(cv_peak_dists, color=class)) + geom_density() 
+```
+
+```{r}
+ggplot(d %>% filter(grepl("2015-10-30", fname)), aes(total_duration, color=class)) + geom_density() 
+```
+
+
+```{r}
+km = kmeans(d[,1:3], centers= 2)
+```
+
+```{r}
+d1 = d %>% filter(amp_ratio<.25, amp_ratio>0, cv_peak_dists >0, cv_peak_dists<=2, num_peaks>8)
+table(d$class)
+table(d1$class)
+```
+
+```{r}
+ggplot(d1, aes(amp_ratio, cv_peak_dists, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d1, aes(amp_ratio, num_peaks, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d1, aes(amp_ratio, mean_amp, color=class)) + geom_point()
+```
+
+
+```{r}
+ggplot(d1, aes(total_duration, mean_amp, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d1, aes(total_duration, rate, color=class)) + geom_point()
+```
+
+
+```{r}
+d2 = d %>% filter(amp_ratio<.2, total_duration > 0.5, rate<20, rate > 2)
+table(d2$class)
+```
+
+```{r}
+ggplot(d2, aes(amp_ratio, total_duration, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d2, aes(amp_ratio, rate, color=class)) + geom_point()
+```
+
+```{r}
+ggplot(d2, aes(total_duration, rate, color=class)) + geom_point()
+```
+
+
+
+
+```{r}
+d = data.frame(files, ratios)
+```
+
