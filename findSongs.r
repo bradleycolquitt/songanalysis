@@ -3,7 +3,7 @@
 suppressMessages(library(parallel))
 suppressMessages(library(docopt))      
 
-doc <- "Usage: findSongs.r [-d directory] [-f no_filter_by_size] [-t date] [-m time] [-c cores] [-n nsongs]
+doc <- "Usage: findSongs.r [-d directory] [-f no_filter_by_size] [-t date] [-m time] [-c cores] [-n nsongs] [-l low_noise]
 
 -d --dir DIRECTORY  directory to be processed, default = '.'
 -f --no_filter_by_size skip filtering files by size (0.5 to 5 MB)
@@ -12,7 +12,7 @@ doc <- "Usage: findSongs.r [-d directory] [-f no_filter_by_size] [-t date] [-m t
 -c --cores CORES number of cores to use, default = 4
 -n --nsongs NSONGS copy not_songs to new directory 
 -r --remove delete non song files
-
+-l --low_noise BOOLEAN wav recorded using low noise setup (e.g. Presonus). Default is true.
 -h --help           show this help text"
 
 opt <- docopt(doc)
@@ -36,6 +36,9 @@ if(length(opt$cores) == 0)
   opt$cores = 4
 if(length(opt$time) == 0)
   opt$time = "0:00:00"
+if(length(opt$low_noise)==0)
+  opt$low_noise = TRUE
+
 if(length(opt$no_filter_by_size) > 0) {
   opt$no_filter_by_size = TRUE
 } else {
@@ -78,7 +81,7 @@ sized_files = sized_files[1:10]
 res = unlist(mclapply(sized_files, function(file) {
   w = readWave(file)
   songfinder2(w, min_duration = 15, max_gap = 10, max_duration=200,
-                 min_num_peaks=10, max_num_peaks=NULL, amp_ratio_max_gap=120)
+                 min_num_peaks=10, max_num_peaks=NULL, amp_ratio_max_gap=120, low_noise=opt$low_noise)
 }
 #))
 , mc.cores=opt$cores))
