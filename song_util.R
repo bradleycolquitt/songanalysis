@@ -1333,7 +1333,8 @@ songfinder2 = function(wav,
                        thresh=0.2, 
                        min_num_peaks = 5, 
                        max_num_peaks=10,
-                       amp_ratio_max_gap=100) {
+                       amp_ratio_max_gap=100,
+                       low_noise=T) {
   wavf = highpass_filter(wav, from = 500, wl = 1024, ovlp = 25)
   subsamp = 10
   peak_info = findpeaks_range(wavf, min_duration = min_duration, 
@@ -1371,9 +1372,16 @@ songfinder2 = function(wav,
   peak_dists = peak_dist(peaks)
   peak_dists = peak_dists[peak_dists<0.5]
   cv_peak_dist = sd(peak_dists) / mean(peak_dists)
-  res = (total_duration > 0.5) & 
+  
+  if (low_noise) {
+    res = (total_duration > 0.5) & 
         (amp_ratio < .2) & (amp_ratio > 0) &
         (rate > 5) & (rate < 12)
+  } else {
+    res = (total_duration > 0.5) & 
+          (amp_ratio < .4) & (amp_ratio > 0) &
+        (rate > 5) & (rate < 12)
+  }
         #(cv_peak_dist < 1.1) & (cv_peak_dist > 0)
         
       #  (num_peaks >= min_num_peaks)
