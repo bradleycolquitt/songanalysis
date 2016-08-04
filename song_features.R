@@ -23,7 +23,7 @@ calc_fm = function(wav, wl=512, subregion=NULL) {
 
 #' stripped down version of seewave::spec
 calc_psd_region = function(wav_matrix, f, wl = 512, wn = "hanning", fftw = TRUE, norm = TRUE, 
-                           PSD = TRUE, from = NULL, to = NULL, at = NULL) {
+                           PSD = TRUE, from = NULL, to = NULL, at = NULL, ovlp=0) {
   
   # input <- inputw(wave = wave, f = f)
   #   wave <- input$w

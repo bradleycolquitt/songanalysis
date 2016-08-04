@@ -1158,7 +1158,7 @@ findpeaks_range = function(wav, min_duration=50, max_gap=75, max_duration=300, t
   peak_info$num_peak_diff = c(0, diff(peak_info$num_peak))
   
   ind1 = which.max(peak_info$num_peak_diff) 
-  flat_value = median(peak_info$num_peak) / 20
+  flat_value = median(peak_info$num_peak) / 2
   peak_info$num_peak_diff = ifelse(abs(peak_info$num_peak_diff) <= flat_value, 0, peak_info$num_peak_diff )
   diff_rle = rle2(peak_info[ind1:nrow(peak_info),"num_peak_diff"], indices = T)
   
@@ -1376,11 +1376,11 @@ songfinder2 = function(wav,
   if (low_noise) {
     res = (total_duration > 0.5) & 
         (amp_ratio < .2) & (amp_ratio > 0) &
-        (rate > 5) & (rate < 12)
+        (rate > 3) & (rate < 12)
   } else {
     res = (total_duration > 0.5) & 
           (amp_ratio < .4) & (amp_ratio > 0) &
-        (rate > 5) & (rate < 12)
+        (rate > 3) & (rate < 12)
   }
         #(cv_peak_dist < 1.1) & (cv_peak_dist > 0)
         
