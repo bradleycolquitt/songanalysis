@@ -1,11 +1,35 @@
 
+find_closest = function(target, range) {
+  
+  if (is.unsorted(range))
+    stop("range must be sorted")
+  
+  if (length(range)==1) {
+    return(range)
+  }
+  val = median(range)
+  mid = round(length(range) / 2)
+  if (target <= val) {
+    find_closest(target, range[1:mid])
+  } else {
+    find_closest(target, range[(mid+1):length(range)])
+  }
+}
+# 
+# find_freqband = function(psd, band) {
+#   ind1 = which.min(dist(band[1], psd[,1]))
+#   ind2 = which.min(dist(band[2], psd[,1]))
+#   return(ind1:ind2)
+#   #c(ind1, ind2)
+# }
 
-find_freqband = function(psd, band) {
-  ind1 = which.min(dist(band[1], psd[,1]))
-  ind2 = which.min(dist(band[2], psd[,1]))
+find_closest_inds = function(targets, range) {
+  ind1 = which(range==find_closest(targets[1], range))
+  ind2 = which(range==find_closest(targets[2], range))
   return(ind1:ind2)
   #c(ind1, ind2)
 }
+
 
 ######### SPECTRAL ##########
 calc_psd = function(wav, wl=512, subregion=NULL) {
@@ -203,11 +227,16 @@ wiener_entropy = function(wav, band=NULL, subregion=NULL) {
 #' @param band, selected frequency band
 #' @references https://en.wikipedia.org/wiki/Spectral_flatness
 #' @return scalar, calculated Weiner entropy
-calc_wiener_entropy_psd = function(psd, band=NULL) {
+calc_wiener_entropy_psd = function(psd, band=NULL, freq_ind=NULL) {
   if (is.null(band)) {
     calc_wiener_entropy(psd[,2])
   } else {
-    calc_wiener_entropy(psd[find_freqband(psd, band),2]) 
+    if (!is.null(freq_ind)) {
+      calc_wiener_entropy(psd[freq_ind,2])       
+    } else {
+      calc_wiener_entropy(psd[find_freqband(psd, band),2]) 
+    }
+
   }
 }
 
@@ -261,23 +290,29 @@ spectral_features_mat = function(wav_matrix, f, wl = 512, band=NULL, subregion=N
 }
 
 ######### AGGREGATE ########
-calc_spectral_features_batch = function(info, wl=512, band=NULL, subregion=NULL, overlap=50) {
+calc_spectral_features_batch = function(info, wl=512, band=NULL, subregion=NULL, overlap=50, thresh=0) {
+  #data = apply(info, 1, function(row) {
+ # info = info[9:10,]
   data = foreach(row=isplitRows(info, chunkSize=1)) %dopar% {
+    #print(as.data.frame(row))
     mat = load_mat(row$mat)
+   # mat = mat[!(mat$labels %in% c("-", "")),]
     mat$wav =row$wav
-    if(nrow(mat) < 10) {
+    if(nrow(mat) < 10) {(NULL)
       return(NULL)
     }
     wav = filtersong(readWave(row$wav))
     d = foreach(syl=isplitRows(mat, chunkSize=1), .combine="rbind") %do% {
-      calc_spectral_features(wav, wl=wl, band=band, subregion=c(as.numeric(syl$onsets), as.numeric(syl$offsets)), overlap=overlap)
+      calc_spectral_features(wav, wl=wl, band=band, subregion=c(as.numeric(syl$onsets), as.numeric(syl$offsets)), overlap=overlap, thresh=thresh)
     }
     data.frame(mat, d)
   }
+  data = data[unlist(lapply(data, function(x) !is.null(x)))]
+  #})
   #data1 = bind_rows(data)
   return(bind_rows(data))
 }
-calc_spectral_features = function(wav, wl=512, band=NULL, subregion=NULL, overlap=50) {
+calc_spectral_features = function(wav, wl=512, band=NULL, subregion=NULL, overlap=50, thresh=0) {
   window = wl / wav@samp.rate
   fs = wav@samp.rate
   
@@ -292,13 +327,23 @@ calc_spectral_features = function(wav, wl=512, band=NULL, subregion=NULL, overla
   subregion2 = subregion
   wav_mat = as.matrix(wav@left)
   freqs = seq(0, (fs-1) / 2, fs / (wl)) / 1000
-  res = sapply(steps, function(step) {
+  res = lapply(steps, function(step) {
     subregion2[1] = subregion[1] + step
     subregion2[2] = subregion2[1] + window
     #print(subregion2)
     if (subregion2[1] <= window |  subregion2[2] >= (wav_duration-window)) return(NA)
-    calc_psd_region(wav_mat, f = fs, wl = wl, fftw = T, PSD=T, at = subregion2[1])[,2]
+    a = calc_psd_region(wav_mat, 
+                        f = fs, 
+                        wl = wl, 
+                        fftw = T, 
+                        PSD=T, 
+                        at = subregion2[1],
+                        norm=F)[,2]
+    ##anorm = a / max(a)
+    #a[anorm<thresh] = min(a)
+    a
   })
+  res = do.call(cbind, res)
   res = t(na.omit(t(res)))
   if(nrow(res)< (wl / 2)) {
     freq_mean = NA
@@ -313,14 +358,26 @@ calc_spectral_features = function(wav, wl=512, band=NULL, subregion=NULL, overla
     good_ff = NA
     goodness = NA
   } else {
+    freq_ind = find_closest_inds(band, freqs)
     spec = apply(res, 2, function(x) {
       psd = cbind(freqs, x)
-      c(calc_wiener_entropy_psd(psd, band=band),
+      c(calc_wiener_entropy_psd(psd, freq_ind=freq_ind),
         calc_mean_freq_psd(psd),
         calc_median_freq_psd(psd),
         calc_max_freq_psd(psd))
       }) 
-    went_mean = mean(spec[1,])
+    #went_mean = mean(spec[1,])
+    
+    
+    #res1 = data.frame(ind=1:nrow(res), val=rowSums(res))
+    #res1 = res1[order(-res1$val),]
+    #ress = cumsum(res1$val)
+    #ress = ress / max(ress)
+    #inds = res1$ind[ress>.9]
+    #res1$val[res1$ind %in% inds] = min(res1$val)
+    #res1 = res1$val[order(res1$ind)]
+    res1 = rowSums(res)
+    went_mean = calc_wiener_entropy_psd(cbind(freqs, res), freq_ind=freq_ind)
     went_var = var(spec[1,])
     
     freq_mean = mean(spec[2,])
@@ -332,7 +389,7 @@ calc_spectral_features = function(wav, wl=512, band=NULL, subregion=NULL, overla
     freq_max = mean(spec[4,])
     freq_max_cv = sd(spec[4,], freq_median)
     
-    good = calc_goodness(wav, wl=wl, wn="hanning", subregion=subregion, freq_range=c(1, 8))
+    good = calc_goodness(wav, wl=wl, wn="hanning", subregion=subregion, freq_range=band)
     good_ff = good$ff
     goodness = good$goodness
   }
@@ -351,6 +408,8 @@ calc_amplitude_features_batch = function(info, band=NULL,  subsamp=1) {
     if(nrow(mat) < 10) {
       return(NULL)
     }
+    
+    mat = process_mat(mat)
     wav = filtersong(readWave(row$wav))
     d = foreach(syl=isplitRows(mat, chunkSize=1), .combine="rbind") %do% {
       calc_amp_stats(wav,  band=band, subregion=c(as.numeric(syl$onsets), as.numeric(syl$offsets)), subsamp=subsamp)
@@ -463,9 +522,13 @@ calc_goodness = function(wav, wl=512, wn="hanning", subregion=NULL, freq_range=c
   } else { 
     cp = ceps(wav, wl=wl, plot=F)
   }
-  cp_ind1 = which.min(dist(cp[,1], 1/freq_range[2]))
-  cp_ind2 = which.min(dist(cp[,1], 1/freq_range[1]))
-  cp = cp[cp_ind1:cp_ind2,]
+  #cp_ind1 = find_closest_inds(1/freq_range[2], cp[,1])
+  #cp_ind2 = find_closest(1/freq_range[1], cp[,1])
+  #cp_ind1 = which.min(dist(cp[,1], 1/freq_range[2]))
+  #cp_ind2 = which.min(dist(cp[,1], 1/freq_range[1]))
+  inds = find_closest_inds(c(1/freq_range[2], 1/freq_range[1]), cp[,1])
+  #cp = cp[cp_ind1:cp_ind2,]
+  cp = cp[inds,]
   cp_max_ind = which.max(cp[,2])
   cp_max_power = cp[cp_max_ind,2]
   cp_max_freq = 1/cp[cp_max_ind,1]
@@ -563,3 +626,4 @@ calc_rolling_tempo = function(peaks, chunk_size=5) {
   return(list(tempo_mean = mean(tempos), tempo_sd = sd(tempos)))
   
 }
+

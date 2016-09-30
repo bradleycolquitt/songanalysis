@@ -3,7 +3,7 @@
 suppressMessages(library(parallel))
 suppressMessages(library(docopt))      
 
-doc <- "Usage: findSongs.r [-d directory] [-f no_filter_by_size] [-t date] [-m time] [-c cores] [-n nsongs] [-l low_noise]
+doc <- "Usage: findSongs.r [-d directory] [-f no_filter_by_size] [-t date] [-m time] [-c cores] [-n nsongs] [-p param] [-l high_noise]
 
 -d --dir DIRECTORY  directory to be processed, default = '.'
 -f --no_filter_by_size skip filtering files by size (0.5 to 5 MB)
@@ -12,7 +12,8 @@ doc <- "Usage: findSongs.r [-d directory] [-f no_filter_by_size] [-t date] [-m t
 -c --cores CORES number of cores to use, default = 4
 -n --nsongs NSONGS copy not_songs to new directory 
 -r --remove delete non song files
--l --low_noise BOOLEAN wav recorded using low noise setup (e.g. Presonus). Default is true.
+-l --high_noise BOOLEAN wav recorded using relatively high noise setup (e.g. not powered amp, Presonus). Default is false.
+-p --param PARAM
 -h --help           show this help text"
 
 opt <- docopt(doc)
@@ -20,8 +21,8 @@ opt <- docopt(doc)
 options(warn=-1)
 suppressMessages(source("~/src/songanalysis/song_util.R"))
 suppressMessages(source("~/src/songanalysis/threshold.r"))
-
-#opt = list(dir="/mnt/bengal_home/song/wh96pk55_2/2016-07-28", cores=10)
+library(stringr)
+#opt = list(dir="/mnt/bengal_home/song/bk89", date="2016-08-14", cores=7, param="/mnt/bengal_home/song/bk89/findSongs_param.config")
 #opt = list(dir="/mnt/bengal_home/song/gr44gr48", no_filter_by_size=1, cores=10)
 
 if (length(opt$date) == 0 & length(opt$time) > 0)
@@ -36,8 +37,12 @@ if(length(opt$cores) == 0)
   opt$cores = 4
 if(length(opt$time) == 0)
   opt$time = "0:00:00"
-if(length(opt$low_noise)==0)
-  opt$low_noise = TRUE
+if(length(opt$high_noise)==0) {
+  opt$high_noise = FALSE
+} else {
+  opt$high_noise = TRUE
+}
+  
 
 if(length(opt$no_filter_by_size) > 0) {
   opt$no_filter_by_size = TRUE
@@ -79,27 +84,72 @@ if (!opt$no_filter_by_size) {
 print("Finding songs...")
 #sized_files = sized_files[1:10]
 #print(opt$low_noise)
+param = list( min_duration=15,
+              max_gap=10,
+              max_duration=400,
+              min_num_peaks=10, 
+              max_num_peaks=NULL,
+              amp_ratio_max_gap=120,
+              amp_ratio_min=0,
+              amp_ratio_max=.2,
+              rate_min=3,
+              rate_max=12)
+
+if (length(opt$param) > 0 ) {
+  param_tmp = read.delim(opt$param, sep="=", header=F, as.is = T)
+  param_tmp[,1] = str_trim(param_tmp[,1])
+  param_tmp[,2] = str_trim(param_tmp[,2])
+  print(param_tmp)
+  for (i in 1:nrow(param_tmp)) {
+    param[[param_tmp[i,1]]] = param_tmp[i,2]
+  }
+} 
+
+print("---- Params ----")
+ind = which(unlist(lapply(param, function(x) !is.null(x))))
+for (i in ind) {
+  param[[i]] = as.numeric(param[[i]])
+}
+for (i in 1:length(param)) {
+  print(paste(names(param)[i], param[[i]],  sep = " = "))
+}
+
+#res = unlist(lapply(sized_files, function(file) {
 res = unlist(mclapply(sized_files, function(file) {
   w = readWave(file)
-  songfinder2(w, min_duration = 15, max_gap = 10, max_duration=400,
-                 min_num_peaks=10, max_num_peaks=NULL, amp_ratio_max_gap=120, low_noise=opt$low_noise)
+  songfinder2(w, 
+              min_duration = param[["min_duration"]], 
+              max_gap = param[["max_gap"]], 
+              max_duration= param[["max_duration"]],
+              min_num_peaks = param[["min_num_peaks"]], 
+              max_num_peaks = param[["max_num_peaks"]], 
+              amp_ratio_max_gap = param[["amp_ratio_max_gap"]], 
+              amp_ratio_min = param[["amp_ratio_min"]],
+              amp_ratio_max = param[["amp_ratio_max"]],
+              rate_min = param[["rate_min"]],
+              rate_max = param[["rate_max"]],
+              low_noise=!opt$high_noise)
 }
 #))
 , mc.cores=opt$cores))
 
 res = data.frame(name=sized_files, song=res) 
+res1 = res
+res1$song = as.character(res$song)
+song_ind = res1$song=="TRUE"
+
 #print(summary(res))
-print(paste("Number of identified songs: ", nrow(res[res[,2],]), sep=""))
+print(paste("Number of identified songs: ", nrow(res[song_ind,]), sep=""))
 songs_dir = paste(opt$dir, "songs", sep="/")
 dir.create(songs_dir, showWarnings = F)
-file.copy(as.character(res[res[,2],1]), songs_dir, copy.date=T, overwrite=F)
+file.copy(as.character(res[song_ind,1]), songs_dir, copy.date=T, overwrite=F)
 
 if (length(opt$nsongs) > 0) {
   nsongs_dir = paste(opt$dir, "not_songs", sep="/")
   dir.create(nsongs_dir, showWarnings = F)
-  file.copy(as.character(res[!res[,2],1]), nsongs_dir, copy.date=T, overwrite=F)
+  file.copy(as.character(res[!song_ind,1]), nsongs_dir, copy.date=T, overwrite=F)
 }
 
 if (length(opt$remove) > 0) {
-  file.remove(as.character(res[!res[,2],1]))
+  file.remove(as.character(res[!song_ind,1]))
 }

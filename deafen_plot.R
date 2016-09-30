@@ -30,7 +30,7 @@ plot_syl_transition_matrices_by_date = function(info, labels=NULL, rel_date=T) {
  
   absent = NULL
   if (rel_date) {
-    d = info %>% group_by(deafened, rel_date) %>% do(process_syllable_matrix(., labels))
+    d = info %>% group_by(deafened, rel_date) %>% do(process_syllable_matrix(., labels)) %>% ungroup(.)
     date_seq = seq(min(d$rel_date), max(d$rel_date))
     absent = setdiff(date_seq, unique((d$rel_date)))
     colnames(d)[grep("rel_date", colnames(d))] = "date"

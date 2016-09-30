@@ -1,3 +1,5 @@
+source("~/data2/rstudio/birds/utils/stats.R")
+
 ######## Fundamental frequency ########
 calc_ff = function(wav, peaks) {
   
@@ -41,7 +43,7 @@ calc_ff = function(wav, mat) {
 #' @param min_freq, parameter supplied to findpeaks_freq, peaks below this value are removed
 #' @param error, cv of inferred FF must be below this value
 #' @return mat file supplemented with calculated fundamental frequency
-calc_ff2 = function(wav, mat, lbuffer=0, rbuffer=0, min_freq=1, error = .01, thresh=.1, wl=1024) {
+calc_ff2 = function(wav, mat, lbuffer=0, rbuffer=0, min_freq=1, nharm=NULL, error = .01, thresh=.1, wl=1024, to_plot=F) {
   fs = wav@samp.rate
   window = wl / fs
   
@@ -53,9 +55,13 @@ calc_ff2 = function(wav, mat, lbuffer=0, rbuffer=0, min_freq=1, error = .01, thr
     if ((to-from)<window) {
       psd = NA
     } else {
-      psd = spec(wav, wl=wl, PSD=T, from=from, to=to, plot=F)
+      psd = spec(wav, wl=wl, PSD=T, from=from, to=to, plot=to_plot)
     }
   } else {
+    #mat$plot = FALSE
+    #if (to_plot) {
+    ##  mat$plot[2] = TRUE
+    #}
     psd = apply(mat, 1, function(x) {
       from = as.numeric(x[1])+lbuffer
       to = as.numeric(x[2])-rbuffer
@@ -66,25 +72,34 @@ calc_ff2 = function(wav, mat, lbuffer=0, rbuffer=0, min_freq=1, error = .01, thr
       }
     })
   }
-    
+
   if (is.na(psd))
     return(cbind(mat, ff=NA))
-  
   
   if (class(psd) == "matrix") psd = list(psd)
   freqs = unlist(lapply(psd, function(data) {
     if(is.na(data))
       return(NA)
+    data[data[,1]<min_freq,2] = 0
+    data[,2] = data[,2] / max(data[,2])
+  
     d = findpeaks_freq(data, min_value=min_freq, max_gap=.4, min_size=0, thresh=thresh)
-    if (nrow(d)==1)
-      return(mean(d[1,]))
+    if (nrow(d)==1) {
+      return(rowMeans(d))
+    }
     d_mean = apply(d, 1, mean)
-    test_steps = seq(1:nrow(d))
+    
+    if (is.null(nharm)) {
+      test_steps = seq(1:nrow(d))      
+    } else {
+      test_steps = 1:nharm
+    }
+    
     test_steps1 = lapply(0:3, function(i) test_steps + i)
     
     d_freq = NA
     for (i in 1:length(test_steps1)) {
-      d_f = d_mean / test_steps1[[i]]
+      d_f = d_mean[1:length(test_steps)] / test_steps1[[i]]
       cv = sd(d_f)/mean(d_f)
       #if (is.na(cv))
       if (cv < error) {
@@ -98,9 +113,12 @@ calc_ff2 = function(wav, mat, lbuffer=0, rbuffer=0, min_freq=1, error = .01, thr
   return(cbind(mat, ff=freqs))
 }
 
-calc_ff2_batch = function(info, label="a", lbuffer=0, rbuffer=0, min_freq=1, error=.01, thresh=.1) {
+calc_ff2_batch = function(info, label="a", lbuffer=0, rbuffer=0, min_freq=1, nharm=NULL, error=.01, thresh=.1, to_plot=F) {
   info = as.data.frame(info)
-  d = foreach(row=isplitRows(info, chunkSize=1), .combine="rbind" ) %dopar% {
+  par(mfrow=c(3,3))
+  info$plot = FALSE
+  info$plot[sample(1:nrow(info), 9, replace=F)] = TRUE
+  d = foreach(row=isplitRows(info, chunkSize=1), .combine="rbind" ) %do% {
     wav = readWave(row[1, "wav"])
     #print(row[1,"wav"])
     wavf = filtersong(wav)
@@ -108,7 +126,7 @@ calc_ff2_batch = function(info, label="a", lbuffer=0, rbuffer=0, min_freq=1, err
     
     mat = mat %>% dplyr::filter(labels==label)
     if (nrow(mat) > 0) {
-      ff = cbind(calc_ff2(wavf, mat, lbuffer=lbuffer, rbuffer=rbuffer, min_freq=min_freq, error=error, thresh=thresh), mat = row[1,"mat"])
+      ff = cbind(calc_ff2(wavf, mat, lbuffer=lbuffer, rbuffer=rbuffer, min_freq=min_freq, nharm=nharm, error=error, thresh=thresh), mat = row[1,"mat"], to_plot=row[1,"plot"])
       return(ff)
     } else {
       return(NULL)
@@ -116,6 +134,42 @@ calc_ff2_batch = function(info, label="a", lbuffer=0, rbuffer=0, min_freq=1, err
   }
   d
 }
+
+test_psd = function(info, row_ind=1, syl_inds=1:4, label=label, lbuffer=0, rbuffer=0, min_freq=1, nharm=NULL, error=.05, thresh=.05) {  
+  row = info[row_ind,]
+ # print(row[,c("mat", "labels")])
+  wav = readWave(row[1, "wav"])
+  #print(row[1,"wav"])
+  wavf = filtersong(wav)
+  mat = load_mat(row[1, "mat"])
+  
+  mat = mat %>% dplyr::filter(labels==label)
+  
+  
+  wl = 512
+  par(mfrow=c(2,2))
+  for (syl_ind in syl_inds) {
+    from = as.numeric(mat[syl_ind,1])+lbuffer
+    to = as.numeric(mat[syl_ind,2])-rbuffer
+    data = spec(wav, wl=wl, PSD=T, from=from, to=to, plot=F)
+    if(is.na(data))
+      return(NA)
+    data[data[,1]<min_freq,2] = 0
+    data[,2] = data[,2] / max(data[,2])
+    plot(data, type="l", main=paste(mat[syl_ind,"onsets"], sep=""))
+  }
+
+  calc_ff2(wavf,
+           mat,
+           lbuffer=lbuffer,
+           rbuffer=rbuffer,
+           min_freq=min_freq,
+           nharm=nharm,
+           error=error,
+           thresh=thresh,
+           to_plot=T)
+}
+
 calc_freq_rolling_batch = function(info, label="a", offset=8) {
   d = foreach(row=isplitRows(info, chunkSize=1), .combine="rbind") %dopar% {
     print(row[1,"wav"])
@@ -345,4 +399,16 @@ calc_freq = function(wav, offset=10, duration=8, band=NULL, subregion=NULL) {
   psd1$offsets = subregion[2]
   #return(as.data.frame(psd1))
   return(psd1[which.max(psd1[,2]),1])
+}
+
+calc_rolling_func = function(x, window=9, func="calc_cv") {
+  out = vector("numeric", length = length(x))
+  min_ind = ceil(window/2)
+  max_ind = length(out) - (min_ind - 1)
+  span = min_ind - 1
+  for (i in min_ind:max_ind) {
+    tmp = x[(i - span):(i+span)]
+    out[i] = do.call(func, list(tmp))
+  }
+  return(out)
 }

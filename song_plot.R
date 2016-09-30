@@ -4,13 +4,13 @@ library(scales)
 #theme_set(theme_classic())
 colors = scale_color_manual("", values=c("black", "red"))
 fills = scale_fill_manual("", values=c("black", "red"))
-
-plot_syl_transition_matrices_by_date = function(info, labels=NULL) {
-  d = info %>% group_by(date) %>% do(process_syllable_matrix(., labels))
-  gg = ggplot(d, aes(To, From, fill=value)) + geom_tile() + facet_wrap(~date)
-  print(gg)
-  return(d)
-}
+# 
+# plot_syl_transition_matrices_by_date = function(info, labels=NULL) {
+#   d = info %>% group_by(date) %>% do(process_syllable_matrix(., labels))
+#   gg = ggplot(d, aes(To, From, fill=value)) + geom_tile() + facet_wrap(~date)
+#   print(gg)
+#   return(d)
+# }
 
 plot_feature_vs_time = function(data, value=NULL, reference_datetime=NULL, ylab=NULL, xlab=NULL, ylim=NULL, add_baseline=FALSE, grouping_factor=NULL) {
   if (is.null(value)) 
