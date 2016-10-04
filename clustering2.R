@@ -4,7 +4,10 @@ library(doMC)
 library(proxy)
 library(cluster)
 library(caret)
-
+library(dplyr)
+library(gridExtra)
+library(mvtnorm)
+library(stringr)
 #suppressMessages(library(WGCNA))
 #registerDoMC(cores=10) 
 
@@ -23,16 +26,23 @@ pam_syllable = function(syls, data, range_to_test=c(4:15)) {
   return(list(syls=syls, mc=d))
 }
 
-mclust_par = function(data, G, modelNames="VVI", plot=T) {
+mclust_par = function(data, G, modelNames="VVI", plot=T, parallel=F) {
   gc() 
-  mcs = foreach(g=G) %do% {
-    Mclust(data, G=g, modelNames=modelNames)
+  mcs = NULL
+  if (parallel) {
+    mcs = foreach(g=G) %dopar% {
+      Mclust(data, G=g, modelNames=modelNames)
+    }
+  } else {
+    mcs = foreach(g=G) %do% {
+      Mclust(data, G=g, modelNames=modelNames)
+    }
   }
+
   mcs = mcs[!unlist(lapply(mcs, is.null))]
   
   recovered_G = unlist(lapply(mcs, function(x) x$G))
   bics = unlist(lapply(mcs, function(x) x$BIC))
-  #print(bics)
   if (length(bics) <= 1) 
     return(list(mcs=NULL, stats=NULL))
   ll = unlist(lapply(mcs, function(x) x$loglik))
@@ -56,7 +66,6 @@ mclust_par = function(data, G, modelNames="VVI", plot=T) {
 }
 
 dist_syllable_data = function(data, compare_data=NULL, distmethod="cor", power=2, selectCols=NULL) {
-  suppressMessages(require(WGCNA))
   #data = sweep(data, 1, apply(data, 1, max), FUN = "/")
   
   data_s = NULL
@@ -83,21 +92,21 @@ dist_syllable_data = function(data, compare_data=NULL, distmethod="cor", power=2
 }
 
 plot_cluster_stats = function(data_stats) {
-  data_stats_mean = data_stats %>% group_by(G, stat) %>% summarize(value=mean(value), rep=1) 
+  data_stats_mean = data_stats %>% group_by(G, stat) %>% dplyr::summarize(value=mean(value), rep=1) 
   theme_set(theme_bw())
   g = ggplot(data_stats, aes(G, value, group=factor(rep))) + geom_line(alpha=I(1/2))
   g = g + geom_line(data=data_stats_mean, color="red") + geom_point(data=data_stats_mean, color="red")  + facet_wrap(~stat, scales="free_y")
   g = g + scale_x_discrete(breaks=c(unique(data_stats$G)))
   
-  data_stats_mean = ungroup(data_stats_mean) %>% group_by(stat) %>% mutate(rel_diff_max = abs(value - max(value)) / max(value),
-                                                                           diffs = c(0, diff(value)) / max(value),
-                                                                           diffs2 = c(0, diff(diffs)))
+  data_stats_mean = ungroup(data_stats_mean) %>% group_by(stat) %>% dplyr::mutate(rel_diff_max = abs(value - max(value)) / max(value),
+                                                                           diffs = c(NA, diff(value)) / max(value),
+                                                                           diffs2 = c(NA, diff(diffs)))
   
   g1 = ggplot(data_stats_mean, aes(G, diffs)) + geom_point() + facet_wrap(~stat)
-  g1 = g1 + scale_x_discrete(breaks=c(unique(data_stats$G)))
+ # g1 = g1 + scale_x_discrete(breaks=c(unique(data_stats$G)))
   
   g2 = ggplot(data_stats_mean, aes(G, diffs2)) + geom_point() + facet_wrap(~stat)
-  g2 = g2 + scale_x_discrete(breaks=c(unique(data_stats$G)))
+  #g2 = g2 + scale_x_discrete(breaks=c(unique(data_stats$G)))
   
   grid.arrange(g, g1, g2, nrow=3)
   return(data_stats_mean)
@@ -205,7 +214,7 @@ calc_lik_from_ref = function(bird,
                              
                              ##PSD params
                              wl=512,
-                             freq_limits=c(1,8),
+                             freq_limits=c(1,10),
                              feature_set = "mid_mean",
                              
                              # Distance calculation
@@ -220,11 +229,6 @@ calc_lik_from_ref = function(bird,
                              # Plotting params
                              plot_dir = NULL
 ) {
-#  source("/home/brad/src/songanalysis/song_util.R")
-#  source("/media/data2/rstudio/birds/utils/stats.R")
-#  source("~/data2/rstudio/birds/utils/db.R")
-#  source("~/src/songanalysis/clustering2.R")
-#  source("/home/brad/src/songanalysis/deafen_plot.R")
   require(mvtnorm)
   
   dir = paste("/mnt/bengal_home/song", bird, "songs/select", sep="/")
@@ -257,13 +261,13 @@ calc_lik_from_ref = function(bird,
   print("Fitting models, calculating LL...")
   #res2 = foreach(i=1:nreps) %do% {
   res2 = mclapply(1:nreps, function(i) { 
-  #res2 = lapply(1:nreps, function(i) {
+    #res2 = lapply(1:nreps, function(i) {
     print(paste("Rep ", i, sep=""))
     set.seed(i)
     ## Define data sets
     train_wavs = base_wavs %>% sample_frac(size = (1-test_fraction))
-    test_base_wavs = anti_join(base_wavs, train_wavs)
-    test_rest_wavs = info %>% anti_join(base_wavs)
+    suppressMessages(test_base_wavs = anti_join(base_wavs, train_wavs))
+    suppressMessages(test_rest_wavs = info %>% anti_join(base_wavs))
     
     train_syls = song_syls[song_syls$wav_strip %in% train_wavs$wav_strip,]
     train_psds = song_psds[song_psds_wav %in% train_wavs$wav_strip,]
@@ -303,13 +307,14 @@ calc_lik_from_ref = function(bird,
       test_base_dist1 = adjacency(t(test_base_dist), type = "signed")
       test_rest_dist1 = adjacency(t(test_rest_dist), type="signed")
       
-      require(NMF)
-      par(mfrow=c(1,3))
+      suppressMessages(require(NMF))
+      
       ind = 50
-      cairo_pdf(paste(plot_dir, "heatmaps.pdf"), width=12, height=8)
-      aheatmap(train_dist1[1:ind,1:ind], hclustfun = "ward", color="topo", main="Training")
-      aheatmap(test_base_dist1[1:ind,1:ind], hclustfun = "ward", color="topo", main="Baseline - held out")
-      aheatmap(test_rest_dist1[1:ind,1:ind], hclustfun = "ward", color="topo", main="Post baseline")
+      cairo_pdf(paste(plot_dir, "heatmaps.pdf", sep="/"), width=12, height=5)
+      par(mfrow=c(1,3), mar=c(0, 1, 1, 1))
+      aheatmap(train_dist1[1:ind,1:ind], hclustfun = "ward.D2", color="topo", main="Training")
+      aheatmap(test_base_dist1[1:ind,1:ind], hclustfun = "ward.D2", color="topo", main="Baseline - held out")
+      aheatmap(test_rest_dist1[1:ind,1:ind], hclustfun = "ward.D2", color="topo", main="Post baseline")
       dev.off()
     }
     
@@ -335,6 +340,707 @@ calc_lik_from_ref = function(bird,
   res2_df
 }
 
+calc_lik_auto = function(bird, 
+                         reference_date, 
+                         peak_source = "auto",
+                         max_songs_per_day = 50,
+                         recalculate_psds = T,
+                         recalculate_models = T,
+                         
+                         # PSD params
+                         wl=512,
+                         freq_limits=c(1,10),
+                         feature_set = "mid_mean",
+                         
+                         # Distance calculation
+                         distmethod = "euclidean",
+                         power = 2,
+                         reference_size = 20,
+                        
+                         # Modeling params
+                         range_to_test = 5:10,
+                         test_fraction = .1,
+                         train_number = NULL,
+                         nreps = 10,
+                         
+                         # Plotting params
+                         plot_dir = NULL,
+                         
+                         # Computation params
+                         ncores = 6,
+                         
+                         # Output
+                         output_db_name = "data.db"
+) {
+  require(mvtnorm)
+  set.seed(1)
+  dir = paste("/mnt/bengal_home/song", bird, "songs", sep="/")
+  dir1 = paste(dir, "psd", sep="/")
+  #info = load_mat_info_from(dir, file_ex="wav$")
+  info = load_song_info_from_db("/mnt/bengal_home/song/song_files.db", bird, local=T)
+  info = info %>% mutate(wav_base = basename(wav), 
+                         wav_strip =str_replace(wav_base, ".wav", ""))
+  
+  if (!dir.exists(dir1))
+    dir.create(dir1)
+  
+
+  fname = paste(paste(feature_set, 
+                      distmethod, 
+                      sprintf("power%s", power), 
+                      sprintf("refsize%s", reference_size), sep="-"), ".rds", sep="")
+  
+  model_fname = paste(plot_dir, "models.rds", sep="/")
+  if (recalculate_models | !file.exists(model_fname)) {
+  song_data = NULL
+  psd_fname = paste(dir1, fname, sep="/")
+  if ((recalculate_psds | !file.exists(psd_fname))) {
+    cat("  Calculating PSDs...\n")
+    song_data = calc_song_psds(bird,
+                               peak_source = peak_source,
+                               max_songs_per_day=max_songs_per_day,
+                               wl=wl,
+                               freq_limits=freq_limits,
+                               feature_set=feature_set,
+                               distmethod=distmethod,
+                               power=power,
+                               reference_size=reference_size)
+    saveRDS(song_data, psd_fname)
+  } else {
+    cat("  Loadings PSDs...\n")
+    song_data = readRDS(psd_fname)
+  }
+  
+  song_syls = song_data$syls
+  song_syls = song_syls %>% 
+    mutate(wav_strip =str_replace(id, "-[0-9]+", ""))
+  
+  song_psds = song_data$syl_data
+  song_psds = song_psds[rownames(song_psds) %in% song_syls$id,]
+  song_psds_wav = str_replace(rownames(song_psds), "-[0-9]+", "")
+  
+  base_wavs  = info %>% filter(date<=reference_date)
+  base_syls_ids = song_syls %>% filter(wav_strip %in% base_wavs$wav_strip)
+  cat(sprintf("Plot directory: %s\n", plot_dir))
+  #print(dim(base_wavs))
+  cat(sprintf("   Number of baseline syllables: %s\n", nrow(base_syls_ids)))
+  ## Find best number of mixtures
+  cat("  Calculating distances/Fitting models..\n")
+    #mcs_stats = lapply(1:nreps, function(i) {
+    mcs_stats = mclapply(1:nreps, function(i) { 
+      # Calculate inter-syllable distances
+      cat(sprintf("   Rep %s\n", i))
+      set.seed(i)
+      
+      ## Define data sets
+      if (is.null(train_number)) {
+        train_wavs = base_wavs %>% sample_frac(size = (1-test_fraction))
+      
+        suppressMessages({test_base_wavs = anti_join(base_wavs, train_wavs)})
+        suppressMessages({test_rest_wavs = info %>% anti_join(base_wavs)})
+        #print(dim(test_base_wavs))
+        #print("post segment")
+        train_syls = song_syls[song_syls$wav_strip %in% train_wavs$wav_strip,]
+        train_psds = song_psds[song_psds_wav %in% train_wavs$wav_strip,]
+        #   print(dim(test_syls))
+        #print("post filter")
+        test_base_syls = song_syls[song_syls$wav_strip %in% test_base_wavs$wav_strip,]
+        test_base_psds = song_psds[song_psds_wav %in% test_base_wavs$wav_strip,]
+        #print(dim(test_base_syls))
+        #print("post filter1")
+        test_rest_syls = song_syls[song_syls$wav_strip %in% test_rest_wavs$wav_strip,]
+        test_rest_psds = song_psds[song_psds_wav %in% test_rest_wavs$wav_strip,]
+        #print("post fitler2")
+      } else {
+        if (nrow(base_syls_ids) >= train_number) {
+          train_ids = base_syls_ids %>% sample_n(size = train_number)
+        } else {
+          train_ids = base_syls_ids
+        }
+
+        suppressMessages({test_base_ids = anti_join(base_syls_ids, train_ids)})
+        suppressMessages({test_rest_ids = song_syls %>% anti_join(base_syls_ids)})
+        #print(dim(test_base_wavs))
+        #print("post segment")
+        train_syls = song_syls[song_syls$id %in% train_ids$id,]
+        train_psds = song_psds[rownames(song_psds) %in% train_ids$id,]
+        #   print(dim(test_syls))
+        #print("post filter")
+        test_base_syls = song_syls[song_syls$id %in% test_base_ids$id,]
+        test_base_psds = song_psds[rownames(song_psds) %in% test_base_ids$id,]
+        #print(dim(test_base_syls))
+        #print("post filter1")
+        test_rest_syls = song_syls[song_syls$id%in% test_rest_ids$id,]
+        test_rest_psds = song_psds[rownames(song_psds) %in% test_rest_ids$id,]
+      }
+      psds_list = list(train=train_psds, test_base=test_base_psds, test_rest=test_rest_psds)
+      
+      ## Calculate distances
+      #print("distances")
+      ref_inds = sample(1:nrow(train_psds), reference_size)
+      ref_data = train_psds[ref_inds,]
+      train_dist = dist_syllable_data(train_psds, compare_data = train_psds, 
+                                      distmethod=distmethod, power=power, selectCols=ref_inds)
+      
+      test_base_dist = dist_syllable_data(test_base_psds, compare_data = train_psds, 
+                                          distmethod=distmethod, power=power, selectCols=ref_inds)
+      
+      test_rest_dist = dist_syllable_data(test_rest_psds, compare_data = train_psds,
+                                          distmethod=distmethod, power=power, selectCols=ref_inds)
+      
+      dist_list = list(train=train_dist, test_base=test_base_dist, test_rest=test_rest_dist)
+      
+      if (i == 1) {
+        cat(sprintf("    Number training syllables: %s\n", nrow(train_dist)))
+        cat(sprintf("    Number of held training syllables: %s\n", nrow(test_base_dist)))
+        cat(sprintf("    Number of test syllables: %s\n", nrow(test_rest_dist)))
+      }
+      
+      ## Plot out syllable x syllable distance heatmaps
+      if (!is.null(plot_dir) & i==1) {
+        plot_sylsyl_heatmaps3(dist_list, 
+                              c("Baseline - Training", 
+                                "Baseline - Held out",
+                                "Post"),
+                              plot_dir)
+      }
+
+      ## Test range of mixtures
+      mc_stats = NULL
+      mc_stats = mclust_par(train_dist, G=range_to_test, modelNames="VVI", plot=F, parallel=F)
+      
+      if (!is.null(plot_dir) & i == 1) {
+        lapply(mc_stats$mcs, function(x) {
+          plot_fname = paste(plot_dir, sprintf("psds_G%s.pdf", x$G), sep="/")
+          plot_example_psds(x, train_psds, plot_fname)
+          
+          plot_fname3d = paste(plot_dir, sprintf("3dpsds_G%s.pdf", x$G), sep="/")
+          plot_example_3d_psds(x, song_data, plot_fname3d)
+        })
+      }
+      
+      if (is.null(mc_stats[[1]])) 
+        return(list(mc_stats = NULL, dist_list=NULL))
+      
+      mc_stats$stats$rep = i
+      return(list(mc_stats=mc_stats, dist_list=dist_list))
+    }, mc.cores=ncores)
+    #})
+    saveRDS(mcs_stats, model_fname)
+  } else {
+    mcs_stats = readRDS(model_fname)
+  }
+  
+  mcs_stats = mcs_stats[unlist(lapply(mcs_stats, function(x) !is.null(x$mc_stats)))]
+  data_stats = lapply(mcs_stats, function(x) x$mc_stats$stats)
+  data_stats = do.call("rbind", data_stats)
+  
+  if (!is.null(plot_dir)) 
+    cairo_pdf(paste(plot_dir, "component_estimation.pdf", sep="/"), width=9, height=9)
+  
+  data_stats_mean = plot_cluster_stats(data_stats)
+  
+  if (!is.null(plot_dir)) 
+    dev.off()
+  
+  max_bic_ind = na.omit(data_stats_mean) %>% filter(stat=="BIC") %>% filter(diffs2==min(diffs2)) 
+  max_bic_ind = round(mean(max_bic_ind$G))
+  selected_model = which(range_to_test == max_bic_ind)
+  cat(sprintf("  Selected number of mixtures: %s\n", range_to_test[selected_model]))
+  
+  ## Run replicates
+  cat("  Calculating LL...\n")
+  #res2 = foreach(i=1:nreps) %do% {
+  res2 = mclapply(1:nreps, function(i) { 
+  #res2 = lapply(1:nreps, function(i) {
+    
+    ## Calculate loglikelihoods
+    dist_list = mcs_stats[[i]]$dist_list
+    mod = mcs_stats[[i]]$mc_stats$mcs[[selected_model]]
+    params = mod$parameters
+    
+    res1 = lapply(dist_list[2:3], function(p) {
+      d = calc_likelihood(p, params)
+    })
+    res_df = bind_rows(res1, .id="set")
+    res_df$rep = i
+    res_df
+    #}
+  }, mc.cores = ncores)
+  #})
+  res2_df = bind_rows(res2)
+  res2_df = res2_df %>% mutate(wav_strip = str_replace(id, "-[0-9]+", ""))
+  #res2_df = left_join(res2_df, song_syls, by="id")
+  res2_df = left_join(res2_df, info %>% select(wav_strip, bird, wav))
+  output_db = src_sqlite(output_db_name, create=T)
+  replace_by_key(output_db, table_name = "like", res2_df, "bird")
+  res2_df
+}
+
+calc_lik_auto2 = function(bird, 
+                         reference_dates1,
+                         reference_dates2,
+                         peak_source = "auto",
+                         max_songs_per_day = 50,
+                         recalculate_psds = T,
+                         recalculate_models = T,
+                         
+                         # PSD params
+                         wl=512,
+                         freq_limits=c(1,10),
+                         feature_set = "mid_mean",
+                         
+                         # Distance calculation
+                         distmethod = "euclidean",
+                         power = 2,
+                         reference_size = 20,
+                         
+                         # Modeling params
+                         range_to_test = 5:10,
+                         test_fraction = .1,
+                         train_number = NULL,
+                         nreps = 10,
+                         
+                         # Plotting params
+                         plot_dir = NULL,
+                         
+                         # Computation params
+                         ncores = 6,
+                         
+                         # Output
+                         output_db_name = "data.db"
+) {
+  require(mvtnorm)
+  set.seed(1)
+  dir = paste("/mnt/bengal_home/song", bird, "songs", sep="/")
+  dir1 = paste(dir, "psd", sep="/")
+  #info = load_mat_info_from(dir, file_ex="wav$")
+  info = load_song_info_from_db("/mnt/bengal_home/song/song_files.db", bird, local=T)
+  info = info %>% mutate(wav_base = basename(wav), 
+                         wav_strip =str_replace(wav_base, ".wav", ""))
+  
+  if (!dir.exists(dir1))
+    dir.create(dir1)
+  
+  
+  fname = paste(paste(feature_set, 
+                      distmethod, 
+                      sprintf("power%s", power), 
+                      sprintf("refsize%s", reference_size), sep="-"), ".rds", sep="")
+  
+  model_fname = paste(plot_dir, "base_models.rds", sep="/")
+  
+  
+  if (recalculate_models | !file.exists(model_fname)) {
+    song_data = NULL
+    
+    # Calculate PSDS ----------------------------------------------------------------------
+    psd_fname = paste(dir1, fname, sep="/")
+    if ((recalculate_psds | !file.exists(psd_fname))) {
+      cat("  Calculating PSDs...\n")
+      song_data = calc_song_psds(bird,
+                                 peak_source = peak_source,
+                                 max_songs_per_day=max_songs_per_day,
+                                 wl=wl,
+                                 freq_limits=freq_limits,
+                                 feature_set=feature_set,
+                                 distmethod=distmethod,
+                                 power=power,
+                                 reference_size=reference_size)
+      saveRDS(song_data, psd_fname)
+    } else {
+      cat("  Loadings PSDs...\n")
+      song_data = readRDS(psd_fname)
+    }
+    
+    song_syls = song_data$syls
+    song_syls = song_syls %>% 
+      mutate(wav_strip =str_replace(id, "-[0-9]+", ""))
+    
+    song_psds = song_data$syl_data
+    song_psds = song_psds[rownames(song_psds) %in% song_syls$id,]
+    song_psds_wav = str_replace(rownames(song_psds), "-[0-9]+", "")
+    
+    base_wavs  = info %>% filter(date>=reference_dates1[1], date<=reference_dates1[2])
+    base_syls_ids = song_syls %>% filter(wav_strip %in% base_wavs$wav_strip)
+    
+    compare_wavs = info %>% filter(date>=reference_dates2[1], date<=reference_dates2[2])
+    compare_syls_ids = song_syls %>% filter(wav_strip %in% compare_wavs$wav_strip)
+    
+    cat(sprintf("  Plot directory: %s\n", plot_dir))
+
+    cat(sprintf("   Number of baseline syllables: %s\n", nrow(base_syls_ids)))
+    cat(sprintf("   Number of compare syllables: %s\n", nrow(compare_syls_ids)))
+    
+
+    # Fit baseline models ------------------------------------------------------------
+    cat("  Calculating distances. Fitting baseline models..\n")
+    mcs_stats = mclapply(1:nreps, function(i) { 
+    #mcs_stats = lapply(1:nreps, function(i) {
+      cat(sprintf("   Rep %s\n", i))
+      set.seed(i)
+      
+      ## Define data sets -------------------------------------------------------------
+      if (is.null(train_number)) {
+        base_train_wavs = base_wavs %>% sample_frac(size = (1-test_fraction))
+        compare_train_wavs = compare_wavs %>% sample_frac(size = (1-test_fraction))
+        
+        suppressMessages({base_test_wavs = anti_join(base_wavs, base_train_wavs)})
+        suppressMessages({compare_test_wavs = anti_join(compare_wavs, compare_train_wavs)})
+      
+        base_train_syls = song_syls[song_syls$wav_strip %in% train_wavs$wav_strip,]
+        base_train_psds = song_psds[song_psds_wav %in% train_wavs$wav_strip,]
+        base_test_syls = song_syls[song_syls$wav_strip %in% base_test_wavs$wav_strip,]
+        base_test_psds = song_psds[song_psds_wav %in% base_test_wavs$wav_strip,]
+      
+        compare_train_syls = song_syls[song_syls$wav_strip %in% compare_train_wavs$wav_strip,]
+        compare_train_psds = song_psds[song_psds_wav %in% compare_train_wavs$wav_strip,]
+        compare_test_syls = song_syls[song_syls$wav_strip %in% compare_test_wavs$wav_strip,]
+        compare_test_psds = song_psds[song_psds_wav %in% compare_test_wavs$wav_strip,]
+        #print("post fitler2")
+      } else {
+        if (nrow(base_syls_ids) >= train_number) {
+          base_train_ids = base_syls_ids %>% sample_n(size = train_number)
+        } else {
+          base_train_ids = base_syls_ids
+        }
+        
+        if (nrow(compare_syls_ids) >= train_number) {
+          compare_train_ids = compare_syls_ids %>% sample_n(size = train_number)
+        } else {
+          compare_train_ids = compare_syls_ids
+        }
+        
+        suppressMessages({base_test_ids = anti_join(base_syls_ids, base_train_ids)})
+        suppressMessages({compare_test_ids = anti_join(compare_syls_ids, compare_train_ids)})
+     
+        base_train_syls = song_syls[song_syls$id %in% base_train_ids$id,]
+        base_train_psds = song_psds[rownames(song_psds) %in% base_train_ids$id,]
+        base_test_syls = song_syls[song_syls$id %in% base_test_ids$id,]
+        base_test_psds = song_psds[rownames(song_psds) %in% base_test_ids$id,]
+      
+        compare_train_syls = song_syls[song_syls$id %in% compare_train_ids$id,]
+        compare_train_psds = song_psds[rownames(song_psds) %in% compare_train_ids$id,]
+        compare_test_syls = song_syls[song_syls$id%in% compare_test_ids$id,]
+        compare_test_psds = song_psds[rownames(song_psds) %in% compare_test_ids$id,]
+      }
+      psds_list = list(base_train=base_train_psds, 
+                       base_test=base_test_psds, 
+                       compare_train=compare_train_psds,
+                       compare_test=compare_test_psds)
+      
+      ## Calculate distances -------------------------------------------------------------------
+      ref_inds = sample(1:nrow(base_train_psds), reference_size)
+      ref_data = base_train_psds[ref_inds,]
+      
+      dist_list = lapply(psds_list, function(p) {
+        dist_syllable_data(p, 
+                           compare_data = base_train_psds, 
+                           distmethod=distmethod, 
+                           power=power, 
+                           selectCols=ref_inds)
+      })
+      
+      if (i == 1) {
+        cat(sprintf("    Number baseline training syllables: %s\n", nrow(dist_list$base_train)))
+        cat(sprintf("    Number baseline held syllables: %s\n", nrow(dist_list$base_test)))
+        cat(sprintf("    Number compare training syllables: %s\n", nrow(dist_list$compare_train)))
+        cat(sprintf("    Number compare held syllables: %s\n", nrow(dist_list$compare_test)))
+      }
+      
+      ## Plot out syllable X syllable distance heatmaps ---------------------------------------------------
+      if (!is.null(plot_dir) & i==1) {
+        plot_sylsyl_heatmaps4(dist_list, 
+                              c("Baseline - Training", 
+                                "Baseline - Held out",
+                                "Compare - Training",
+                                "Compare - Held out"),
+                              plot_dir)
+      }
+      
+      ## Test range of model components ------------------------------------------------------------------
+      mc_stats = NULL
+      mc_stats = mclust_par(dist_list$base_train, G=range_to_test, modelNames="VVI", plot=F, parallel=F)
+      
+      ## Plot PSDs ----------------------------------------------------------------------------------------
+      if (!is.null(plot_dir) & i == 1) {
+        lapply(mc_stats$mcs, function(x) {
+          plot_fname = paste(plot_dir, sprintf("psds_G%s.pdf", x$G), sep="/")
+          plot_example_psds(x, base_train_psds, plot_fname)
+          
+          plot_fname3d = paste(plot_dir, sprintf("3dpsds_G%s.pdf", x$G), sep="/")
+          plot_example_3d_psds(x, song_data, plot_fname3d)
+        })
+      }
+      
+      if (is.null(mc_stats[[1]])) 
+        return(list(mc_stats = NULL, dist_list=NULL))
+      
+      mc_stats$stats$rep = i
+      return(list(mc_stats=mc_stats, dist_list=dist_list))
+    }, mc.cores=ncores)
+    #})
+    saveRDS(mcs_stats, model_fname)
+  } else {
+    mcs_stats = readRDS(model_fname)
+  }
+  
+  # Pick number of components ---------------------------------------------------------------------
+  mcs_stats = mcs_stats[unlist(lapply(mcs_stats, function(x) !is.null(x$mc_stats)))]
+  data_stats = lapply(mcs_stats, function(x) x$mc_stats$stats)
+  data_stats = do.call("rbind", data_stats)
+  
+  if (!is.null(plot_dir)) 
+    cairo_pdf(paste(plot_dir, "component_estimation.pdf", sep="/"), width=9, height=9)
+  
+  data_stats_mean = plot_cluster_stats(data_stats)
+  
+  if (!is.null(plot_dir)) 
+    dev.off()
+  
+  max_bic_ind = na.omit(data_stats_mean) %>% filter(stat=="BIC") %>% filter(diffs2==min(diffs2)) 
+  max_bic_ind = round(mean(max_bic_ind$G))
+  selected_model = which(range_to_test == max_bic_ind)
+  cat(sprintf("  Selected number of mixtures: %s\n", range_to_test[selected_model]))
+  
+  # Train compare models --------------------------------------------------------------------------
+  model2_fname = paste(plot_dir, "compare_models.rds", sep="/")
+  if (recalculate_models | !file.exists(model2_fname)) {
+    cat("  Training compare model...\n")
+    plot_compare_dir = paste(plot_dir, "compare", sep="/")
+    if (!dir.exists(plot_compare_dir))
+      dir.create(plot_compare_dir)
+    
+    #compare_mcs = lapply(1:nreps, function(i) {
+    compare_mcs = mclapply(1:nreps, function(i) { 
+      cat(sprintf("   Rep %s\n", i))
+      set.seed(i)
+      
+      cur_dist_list = mcs_stats[[i]]$dist_list
+      
+      mc_stats = NULL
+      mc = Mclust(cur_dist_list$compare_train, G=range_to_test[selected_model], modelNames="VVI")
+      
+      if (!is.null(plot_dir) & i == 1) {
+        plot_fname = paste(plot_compare_dir, sprintf("psds_G%s.pdf", mc$G), sep="/")
+        plot_example_psds(mc, song_psds, plot_fname)
+          
+        plot_fname3d = paste(plot_compare_dir, sprintf("3dpsds_G%s.pdf", mc$G), sep="/")
+        plot_example_3d_psds(mc, song_data, plot_fname3d)
+      }
+      
+      #if (is.null(mc_stats[[1]])) 
+      #  return(list(mc_stats = NULL))
+
+      return(list(mc_stats=mc))
+    }, mc.cores=ncores)
+    #})
+    saveRDS(compare_mcs, model2_fname)
+  } else {
+    compare_mcs = readRDS(model2_fname)
+  }
+  
+  # Calc log-likelihoods -----------------------------------------------------------
+  cat("  Calculating LL...\n")
+  #res2 = mclapply(1:nreps, function(i) { 
+  res2 = lapply(1:nreps, function(i) {
+    dist_list = mcs_stats[[i]]$dist_list
+    mod1 = mcs_stats[[i]]$mc_stats$mcs[[selected_model]]
+    mod2 = compare_mcs[[i]]$mc_stats
+    
+    params1 = mod1$parameters
+    params2 = mod2$parameters
+    
+    res1 = lapply(dist_list[grep("test", names(dist_list))], function(p) {
+      if (nrow(p) > 1) {
+        d1 = calc_likelihood(p, params1) %>% rename(lik1 = lik)
+        d2 = calc_likelihood(p, params2) %>% rename(lik2 = lik)
+        left_join(d1, d2, by="id")
+      } else{
+        data.frame(id="dummy", lik1=NA, lik2=NA)
+      }
+      
+    })
+    res_df = bind_rows(res1, .id="set")
+    res_df$rep = i
+    res_df
+    #}
+  #}, mc.cores = ncores)
+  })
+  res2_df = bind_rows(res2)
+  
+  scores = res2_df %>% group_by(set, id) %>% summarize(kl12=calc_kl_divergence(lik1, lik2))
+  scores = scores %>% mutate(wav_strip = str_replace(id, "-[0-9]+", ""))
+  scores = left_join(scores, info %>% select(wav_strip, bird, wav), by="wav_strip")
+  scores$bird[is.na(scores$bird)] = bird
+  
+  # Write out data -----------------------------------------------------------------------------
+  output_db = src_sqlite(output_db_name, create=T)
+  replace_by_key(output_db, table_name = "like", scores, "bird")
+  
+  return(scores)
+}
+
+calc_song_psds = function(bird,
+                               max_songs_per_day,
+                               peak_source = "mat",
+                               wl=512,
+                               freq_limits=c(1,10),
+                               feature_set="mid_mean",
+                               distmethod="euclidean",
+                               power=2,
+                               reference_size=20) {
+  dir = paste("/mnt/bengal_home/song", bird, "songs", sep="/")
+  info = load_mat_info(dir, file_ex="wav$")
+  info = info %>% group_by(date) %>% do ({
+    d = . 
+    nsize =  ifelse(length(d$date)<=max_songs_per_day, length(d$date), max_songs_per_day)
+    ind = sample(1:nrow(d), nsize, replace=F)
+    d[ind,]
+  })
+  
+  cat(sprintf("   Total number of songs: %s\n", nrow(info)))
+  songs = parse_song_batch2(info$wav, peak_source=peak_source, thresh_range = seq(-5, 5, .5))
+  
+  l = unlist(sapply(songs[[1]], function(x) nrow(x$syllable)))
+  cat(sprintf("   Average number of syllables / song: %s\n", round(mean(l))))
+  ## Get song features
+  process_song_batch(songs, 
+                     feature_set=feature_set, 
+                     wl=wl, 
+                     smoothed=F, 
+                     cluster=F, 
+                     return_data=T, 
+                     freq_limits=freq_limits)
+}
+
+plot_sylsyl_heatmaps3 = function(dist_list, dist_names, plot_dir=NULL) {
+  dists = lapply(1:length(dist_list), function(i) {
+    list(data=adjacency(t(dist_list[[i]]), type="signed"), 
+         title=dist_names[i])
+    })
+  
+  suppressMessages(require(NMF))
+  ind = 40
+  
+  if (!is.null(plot_dir))
+  cairo_pdf(paste(plot_dir, "auto_heatmaps.pdf", sep="/"), width=12, height=5)
+  
+  par(mfrow=c(1,3), mar=c(0, 1, 1, 1))
+  for (i in 1:length(dists)) {
+    suppressMessages(aheatmap(dists[[i]]$data[1:ind,1:ind], 
+                              hclustfun = "ward", 
+                              color="topo", 
+                              main=dists[[i]]$title))
+  }
+
+  if (!is.null(plot_dir))
+    dev.off()
+}
+
+plot_sylsyl_heatmaps4 = function(dist_list, dist_names, plot_dir=NULL) {
+  dists = lapply(1:length(dist_list), function(i) {
+  
+    d = NULL
+    if (nrow(dist_list[[i]]) > 1) {
+    d = adjacency(t(dist_list[[i]]), type="signed")
+    } 
+    list(data=d, 
+         title=dist_names[i])
+  })
+  
+  suppressMessages(require(NMF))
+  ind = 40
+  
+  if (!is.null(plot_dir))
+    cairo_pdf(paste(plot_dir, "auto_heatmaps.pdf", sep="/"), width=12, height=12)
+  
+  par(mfrow=c(2,2), mar=c(0, 1, 1, 1))
+  for (i in 1:length(dists)) {
+    if (!is.null(dists[[i]]$data)) {
+      suppressMessages(aheatmap(dists[[i]]$data[1:ind,1:ind], 
+                                hclustfun = "ward", 
+                                color="topo", 
+                                main=dists[[i]]$title))
+    }
+  }
+  
+  if (!is.null(plot_dir))
+    dev.off()
+}
+
+
+plot_example_psds = function(mc, psds, plot_fname) {
+  cairo_pdf(plot_fname, width=12, height=5)
+ 
+  classification = mc$classification
+  classification = na.omit(classification[match(rownames(psds), names(classification))])
+  psds1 = psds[match(names(classification), rownames(psds)),]
+  psds_m = melt(psds1)
+  psds_m$class = classification[match(psds_m$Var1, names(classification))]
+  gg = ggplot(psds_m, aes(Var2, value))
+  gg = gg + geom_line(aes(group=Var1), alpha=I(1/10))
+  gg = gg + stat_summary(geom="line", fun.y="mean")
+  gg = gg + facet_wrap(~class)
+  gg = gg + labs(x="", y ="")
+  print(gg)
+  dev.off()
+}
+
+plot_example_3d_psds = function(mc, song_data, plot_fname, num_syls=5) {
+  wav = song_data$wav
+  wav_names = str_replace(basename(names(wav)), ".wav", "")
+  #selected_wav = sample(1:length(wav_names), 1)
+  syls = song_data$syls
+  syls = syls %>% mutate(wav_strip = str_replace(id, "-[0-9]+", ""))
+  classification = mc$classification
+  syls$called = classification[match(syls$id, names(classification))]
+  syls = na.omit(syls)
+
+  nrow= num_syls
+  ncol = length(unique(classification))
+  selected_syls = na.omit(syls %>% group_by(called) %>% sample_n(num_syls)) %>% mutate(ind=1:num_syls) %>% arrange(ind)
+  plots = lapply(1:nrow(selected_syls), function(i) {
+    subregion = selected_syls[i,1:2]
+    wav = song_data$wav[[which(wav_names==selected_syls$wav_strip[i])]]
+    try_default({
+    suppressMessages(plot_single_syl(wav, subregion))
+    }, ggplot())
+  })
+# 
+#   x_title = plots[[1]]$labels$x
+#   y_title = plots[[1]]$labels$y
+#   
+  plots = lapply(plots, function(p) {
+    p + labs(x="", y="") + theme(axis.text.y=element_blank())
+  })
+  
+  # a = do.call(grid.arrange, c(c(plots, left=tex, ncol=ncol, nrow=nrow))#, left=textGrob(y_title, rot=90), bottom=textGrob(x_title)))
+  # grid.arrange(arrangeGrob(p1 + theme(legend.position="none"), 
+  #                          p2 + theme(legend.position="none"),
+  #                          p3 + theme(legend.position="none"),
+  #                          p4 + theme(legend.position="none"), 
+  #                          nrow = 2,
+  #                          top = textGrob("Main Title", vjust = 1, gp = gpar(fontface = "bold", cex = 1.5)),
+  #                          left = textGrob("Global Y-axis Label", rot = 90, vjust = 1)), 
+  #              legend, 
+  cairo_pdf(plot_fname, width=12, height=8)
+  do.call(grid.arrange, c(plots, ncol=ncol, nrow=nrow))
+  dev.off()
+}
+
+find_clusters_by_hclust = function(dist_mat) {
+  require(WGCNA)
+  hc = hclust(as.dist(dist_mat), method = "ward.D2")
+  dynamicMods = cutreeDynamic(dendro = hc, 
+                              distM = dist_mat, 
+                              method = "hybrid",
+                              deepSplit = 2, 
+                              pamRespectsDendro = TRUE,
+                              minClusterSize = 5)
+  return(length(unique(dynamicMods)))
+}
+
 calc_likelihood = function(data, params) {
   norms = sapply(1:ncol(params$mean), function(i) {
     dmvnorm(x=data, mean=params$mean[,i], sigma=params$variance$sigma[,,i])
@@ -343,6 +1049,12 @@ calc_likelihood = function(data, params) {
   res = data.frame(id=rownames(norms), lik=log(norms1))
   res$lik[is.infinite(res$lik)] = min(res$lik[res$lik>0])
   res
+}
+
+calc_kl_divergence = function(lik1, lik2) {
+  score = log2(exp(1))*(mean(lik1)-mean(lik2))                                                                                                                                                     
+  #score = score/len1                                                                                                                                                                                                  
+  score                                                                                                                                                                                              
 }
 
 mclust_syllable_data = function(syls, data, models=NULL, range_to_test=c(4:15),sample_size=120, feature_size=20,

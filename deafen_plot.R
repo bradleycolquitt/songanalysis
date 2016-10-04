@@ -3,9 +3,9 @@ colors = scale_color_manual("", values=c("black", "red"))
 fills = scale_fill_manual("", values=c("black", "red"))
 
 
-prep_wav_info = function(bird, deafened_date, manipulation) {
-  wdir = paste("/mnt/bengal_home/song", bird, "songs/select", sep="/")
-  info = load_mat_info(wdir, file_ex = "wav.not.mat")
+prep_wav_info = function(bird, deafened_date, manipulation, subdir="songs/select", file_ex="wav.not.mat") {
+  wdir = paste("/mnt/bengal_home/song", bird, subdir, sep="/")
+  info = load_mat_info(wdir, file_ex = file_ex)
   if (nrow(info) == 0) 
     stop(paste("Info not found for: ", bird, sep=""))
   info$bird = bird

@@ -23,7 +23,7 @@ suppressMessages(source("~/src/songanalysis/song_util.R"))
 suppressMessages(source("~/src/songanalysis/threshold.r"))
 library(stringr)
 #opt = list(dir="/mnt/bengal_home/song/bk89", date="2016-08-14", cores=7, param="/mnt/bengal_home/song/bk89/findSongs_param.config")
-#opt = list(dir="/mnt/bengal_home/song/gr44gr48", no_filter_by_size=1, cores=10)
+#opt = list(dir="/mnt/bengal_home/song/wh96pk55_2", no_filter_by_size=1, cores=10, )
 
 if (length(opt$date) == 0 & length(opt$time) > 0)
   stop("Must specify date with time")
@@ -84,6 +84,7 @@ if (!opt$no_filter_by_size) {
 print("Finding songs...")
 #sized_files = sized_files[1:10]
 #print(opt$low_noise)
+if (!opt$high_noise) {
 param = list( min_duration=15,
               max_gap=10,
               max_duration=400,
@@ -94,6 +95,18 @@ param = list( min_duration=15,
               amp_ratio_max=.2,
               rate_min=3,
               rate_max=12)
+} else {
+  param = list( min_duration=15,
+                max_gap=10,
+                max_duration=400,
+                min_num_peaks=10, 
+                max_num_peaks=NULL,
+                amp_ratio_max_gap=120,
+                amp_ratio_min=0,
+                amp_ratio_max=.4,
+                rate_min=3,
+                rate_max=12)
+}
 
 if (length(opt$param) > 0 ) {
   param_tmp = read.delim(opt$param, sep="=", header=F, as.is = T)
